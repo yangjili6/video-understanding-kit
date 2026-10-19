@@ -1,0 +1,22 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 模型（用 download-models.mjs 下载）
+lib/models/
+*.onnx
+*.wasm
+
+# 输出
+out/
+out-*/
+*.zip
+
+# 临时与日志
+tmp/
+*.log
+serve-*.log
+
+# 私人视频
+*.mp4
+test-dl/
