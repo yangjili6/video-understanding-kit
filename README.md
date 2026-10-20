@@ -1,6 +1,6 @@
 # 网格法手机DSH视频理解工具包（video-understanding-kit）让你的AI更好的去看视频
 
-> ⚠️ **仅适用于 DSH 手机版（DSH Mobile）环境。** 本项目依赖 DSH 手机版的工具链（ffmpeg / ImageMagick / Node）与目录约定，其他环境（桌面、服务器、其他 Android 发行版）未验证，请勿直接套用。
+> ⚠️ **仅适用于 DSH 手机版（DSH Mobile）环境。** 本项目依赖 DSH 手机版的工具链（ffmpeg / ImageMagick / Node）与目录约定，其他环境（桌面、服务器、其他 Android 发行版）未验证，请勿直接套用。注意：你的AI必须支持识图，否则无法正常使用
 
 > **为 AI 看视频时提供可回查的时序网格、字幕转写与证据索引，降低漏看和无依据描述的风险。**
 
