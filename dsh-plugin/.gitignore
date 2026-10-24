@@ -1,0 +1,7 @@
+# 模型与运行时（约 72MB，不进仓库）
+lib/videokit/lib/models/
+lib/videokit/node_modules/
+node_modules/
+out/
+frames/
+downloads/
