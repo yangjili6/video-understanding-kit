@@ -6,31 +6,7 @@
 
 ## 工作流程
 
-```mermaid
-flowchart LR
-    V([输入视频]) --> F[抽取基础帧<br/>默认 5 fps，保留时间戳]
-    V --> T[TransNetV2<br/>检测镜头边界]
-    F --> G[按镜头边界组织内容组]
-    T --> G
-    G --> P[生成网格页<br/>每页 6 帧，3 × 2]
-    P --> S[生成组级导航图<br/>每张最多 12 页]
-    F -. 可选 .-> O[PP-OCRv4<br/>字幕候选与疑点标记]
-    V -. 可选 .-> A[sherpa-onnx<br/>语音转写]
-    G --> I[(index.json)]
-    P --> I
-    S --> I
-    O --> I
-    A --> I
-
-    classDef input fill:#E8F1FF,stroke:#3973C6,color:#17365D,stroke-width:2px;
-    classDef process fill:#F3F4F6,stroke:#738096,color:#202B3C;
-    classDef optional fill:#FFF4DF,stroke:#D99B26,color:#5C3B00;
-    classDef output fill:#E6F6EF,stroke:#29966A,color:#124D36,stroke-width:2px;
-    class V input;
-    class F,T,G,P,S process;
-    class O,A optional;
-    class I output;
-```
+![Video Understanding Kit 工作流程](workflow.svg)
 
 网格适合快速浏览和定位；需要确认小字、细节动作或不确定内容时，再打开对应页面或原始帧。分组依据镜头边界，便于整理时间线，不代表完整的语义场景划分。
 
