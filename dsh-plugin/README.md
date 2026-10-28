@@ -56,7 +56,7 @@ ffmpeg / ImageMagick 若不在引擎的 `PATH` 中，插件会探测 DSH 扩展�
 
 ```text
 dsh-video-kit/
-├── out/        # index.json、frames、grids
+├── out/        # index.json、base/extra 采样帧、grids、可选 subs/audio
 ├── frames/     # video_frame 截取的原始帧
 └── downloads/  # 分析/取帧期间的临时下载，完成后清理
 ```
