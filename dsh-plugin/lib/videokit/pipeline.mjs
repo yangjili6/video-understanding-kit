@@ -95,7 +95,7 @@ async function detectChanges(fps) {
   const step = Math.max(1, Math.round(fps / CHANGE_FPS))
   const args = [
     '-hide_banner', '-loglevel', 'error', '-i', VIDEO,
-    '-vf', 'select=not(mod(n,' + step + ')),scale=' + W + ':' + H + ',format=rgb24',
+    '-vf', "select='not(mod(n," + step + "))',scale=" + W + ':' + H + ',format=rgb24',
     '-vsync', '0', '-f', 'rawvideo', '-',
   ]
   const child = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] })
