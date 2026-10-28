@@ -135,7 +135,7 @@ async function detectChanges(fps) {
           for (let y = by; y < yEnd; y++) {
             for (let x = bx; x < xEnd; x++) {
               const p = (y * W + x) * 3
-              sum += Math.abs(cur[p] - prev[p]) + Math.abs(cur[p + 1] - prev[p + 1]) + Math.abs(cur[p + 2] - prev[p + 2])
+              sum += Math.abs(cur[p] - prev.frame[p]) + Math.abs(cur[p + 1] - prev.frame[p + 1]) + Math.abs(cur[p + 2] - prev.frame[p + 2])
               count += 3
             }
           }
