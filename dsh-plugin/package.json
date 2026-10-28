@@ -31,5 +31,28 @@
   },
   "dependencies": {
     "onnxruntime-web": "^1.22.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yangjili6/video-understanding-kit.git"
+  },
+  "disclosure": {
+    "cloud": true,
+    "network": [
+      "https://b23.tv/",
+      "https://api.bilibili.com/",
+      "https://*.bilivideo.com/",
+      "https://huggingface.co/",
+      "https://raw.githubusercontent.com/"
+    ],
+    "offlineMode": true,
+    "apiKeys": [],
+    "permissions": [
+      "Read user-selected local video files",
+      "Write analysis output under DSH storages/dsh-video-kit",
+      "Run ffmpeg and ImageMagick locally",
+      "Fetch Bilibili metadata/video when a Bilibili URL is supplied",
+      "Download local inference models during setup"
+    ]
   }
 }
