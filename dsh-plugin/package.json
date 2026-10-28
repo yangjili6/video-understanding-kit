@@ -1,7 +1,7 @@
 {
   "name": "dsh-video-kit",
   "version": "0.1.1",
-  "description": "DSH 视频理解：把 B站链接或本地视频拆成字幕时间线 + 内容分组 + 可回查网格页。内置 video-understanding-kit（TransNetV2 镜头检测 + PP-OCRv4 字幕），模型随包附带，零外部服务。",
+  "description": "DSH 视频理解插件：本地/B站视频分析、字幕时间线、镜头分组与可回查网格；视觉模型需单独下载。",
   "type": "module",
   "main": "./index.js",
   "exports": {
