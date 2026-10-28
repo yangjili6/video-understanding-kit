@@ -1,94 +1,72 @@
-# dsh-video-kit 视频理解工具包
+# dsh-video-kit 视频理解插件
 
-把视频拆成**字幕时间线 + 内容分组 + 可回查网格页**，给 Agent 一个能看见、会主动用的工具。
+把视频整理成时间线、镜头分组和可回查网格页，供 DSH Agent 浏览与核验。
 
-## 为什么做成插件
+## 能力
 
-之前在 `dsh-work/video-tmp` 里跑脚本，Agent 看不见它——**只会在手边找 ffmpeg**，然后肉眼看网格图、读错字幕。
-做成 DSH 工具后，`video_analyze` 出现在工具列表里，规划时自然会被选中。
-
-## 两个工具
+插件注册两个工具：
 
 ### `video_analyze`
 
-```
-video   本地路径 / B站链接（支持 b23.tv 短链）/ 直链
-subs    是否提字幕（默认 true）
-asr     是否跑语音识别（需 sherpa-onnx，默认 false）
-```
+输入本地视频路径或 Bilibili 视频链接（支持 `b23.tv` 短链），返回视频时长、内容组、字幕候选、输出目录和索引路径。字幕默认开启；ASR 默认关闭，需要显式传 `asr: true`。
 
-返回：`duration`、`groups`（内容分组）、`subs`（字幕全文 + 时间戳 + 置信度 + 疑点标记）、`outDir`、`indexJson`。
-
-**只返回文本摘要，不返回图片**——省 token。
+当前**不支持任意 HTTP 直链**。URL 视频会下载到临时目录，分析结束后临时视频会删除。
 
 ### `video_frame`
 
-```
-video   视频路径
-t       时间点（秒）
-crop    可选裁剪：WxH+X+Y（只取字幕带时很有用）
-scale   可选缩放宽度
-```
+按时间点截取原始帧，可选裁剪与缩放。输入本地视频路径或 Bilibili 链接；传链接时会重新下载视频后取帧。结果以文件路径返回，可用 DSH 的 `read_image` 打开。
 
-返回原帧文件路径，用 `read_image` 打开。用于核对字幕/动作细节。
+建议流程：
 
-## 工作流
+1. 调用 `video_analyze` 浏览时间线与组级导航图。
+2. 对不确定的字幕或动作，调用 `video_frame` 定位原帧，或用 `read_image` 打开对应网格页。
+3. 将 OCR/ASR 视为候选文本；关键文字、数字和动作细节要回看核验。
 
-```
-video_analyze（文本摘要，几百 token）
-  ├─ 字幕够用 → 直接回答
-  └─ 有疑点 → video_frame 取原帧 → read_image
-```
+## 安装
 
-## 实战经验（2026-10-25 实测）
+要求 DSH Mobile、Node.js 20 或更新版本、ffmpeg、ImageMagick。
 
-### 取帧时机：用区间中点，不要用起点
+1. 将 `dsh-plugin/` 放进 DSH profile 的 `node_modules` 下（或使用 `link:` 安装）。
+2. 安装插件依赖。包声明了 `onnxruntime-web`；若 DSH 的链接安装没有自动安装依赖，请在插件目录运行：
 
-OCR 给的是字幕**区间**（如 `53.5~54.5s`）。取区间**起点**容易抓到淡入瞬间——实测 53.5s 那一帧是空的，54.0s 才有字。**传中点更稳**。
+   ```bash
+   pnpm install
+   ```
 
-### crop 位置要按视频试
+3. 下载视觉模型。在插件目录运行：
 
-竖屏 720×1280 的字幕实测在 **y≈860~960**（约 70% 处），**不在最底部**。
-不同视频字幕位置不同，先用一张**全帧**（不传 crop）确认位置，再裁。
+   ```bash
+   pnpm models
+   # 或 node lib/videokit/download-models.mjs
+   ```
 
-### crop 语法
+   模型约 **47 MB**，保存到 `lib/videokit/lib/models/`。模型文件不随 Git 仓库分发，也不应提交进仓库。
 
-工具接受 ImageMagick 风格 `WxH+X+Y`（如 `720x160+0+890`），内部自动转成 ffmpeg 的 `W:H:X:Y`。直接写 ffmpeg 的冒号语法也支持。
+4. 在 DSH 中执行 `install_bundle target="link:<插件绝对路径>"`，然后重启引擎。插件不支持热重载。
 
-### 实测数据
+ffmpeg / ImageMagick 若不在引擎的 `PATH` 中，插件会探测 DSH 扩展目录；也可通过 `FFMPEG_BIN` 指定 ffmpeg 可执行文件。
 
-| 项目 | 数值 |
-|---|---|
-| 测试视频 | B站 95 秒竖屏 720×1280 |
-| 端到端耗时 | **262 秒**（含下载 + TransNet 检测 + PP-OCR） |
-| 产出 | 13 个内容组、28 条字幕、87 张网格页 |
-| OCR 准确率 | 大部分 conf > 0.95；已知误读：「逗AI真好玩」被读成「逗A真好玩」 |
+### 可选：ASR
 
-## 踩坑记录
-
-1. **DSH 新版工具 `output` 必须是 `{ schema, render }` 对象**，写成函数会被拒（`must declare output { schema, render }`）。
-2. **`ffmpeg` 不在引擎 PATH 里**，要用扩展中心的绝对路径；插件里做了自动探测。
-3. **crop 语法别混**：ImageMagick 用 `WxH+X+Y`，ffmpeg 用 `W:H:X:Y`。
-4. **`index.json` 的 `groups[].from/to` 单位是秒**，不是毫秒。
-
-## 内置
-
-- `lib/videokit/pipeline.mjs` —— video-understanding-kit 完整流程
-- TransNetV2 镜头检测（31MB）+ PP-OCRv4 字幕（15MB），模型随包
-- onnxruntime-web（复用 dsh-long-memory 的 ort）
-
-## 依赖
-
-- `ffmpeg`、`ImageMagick`（扩展中心安装，或设 `FFMPEG_BIN`）
-- Node ≥ 20
+`asr: true` 需要额外安装 sherpa-onnx 和中文 Paraformer 模型（约 217 MB）。模型路径与运行时配置见 `lib/videokit/asr.mjs`。这部分不包含在上述视觉模型包中。
 
 ## 数据目录
 
-`$DSH_HOME/storages/dsh-video-kit/`（可用 `DSH_VIDEO_KIT_DIR` 覆盖）
-- `out/` —— 分析产物（index.json / grids / frames）
-- `frames/` —— video_frame 取的原帧
-- `downloads/` —— 临时下载（用完即删）
+默认目录为 `$DSH_HOME/storages/dsh-video-kit/`，可用 `DSH_VIDEO_KIT_DIR` 覆盖：
 
-## 许可
+```text
+dsh-video-kit/
+├── out/        # index.json、frames、grids
+├── frames/     # video_frame 截取的原始帧
+└── downloads/  # 分析/取帧期间的临时下载，完成后清理
+```
 
-MIT。真正的视频处理在 [video-understanding-kit](https://github.com/yangjili6/video-understanding-kit)。
+`video_analyze` 的 `out` 参数只接受单级目录名称，产物始终写入插件存储目录下的唯一子目录。`video_frame` 的 `outDir` 也只接受存储区内的子目录名称。
+
+## 实测记录
+
+2026-10-25 的一段 95 秒竖屏 Bilibili 视频测试：耗时 262 秒（含下载、TransNet 检测和 PP-OCR），得到 13 个内容组、28 条字幕和 87 张网格页。OCR 曾将「逗AI真好玩」识别成「逗A真好玩」。这是单次测试记录，不代表其他设备或视频的性能与准确率。
+
+## 架构与许可证
+
+完整的视频处理代码位于 `lib/videokit/`，根目录工具包与 DSH 插件内置副本需要保持同步。插件包采用 MIT 许可；模型权重有各自的许可条款，请在使用前核对。
