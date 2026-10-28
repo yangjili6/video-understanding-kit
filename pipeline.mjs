@@ -11,7 +11,7 @@
 //
 // 仍是原型：无真实 STT（cues 文件模拟）、无模型阅读、无真实视频验证。
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync, lstatSync } from 'node:fs'
 import { join } from 'node:path'
 import { transcribeVideo } from './asr.mjs'
 import { detectCuts } from './lib/transnet-lib.mjs'
@@ -35,7 +35,7 @@ function parseArgs(argv) {
 const args = parseArgs(process.argv.slice(2))
 const VIDEO = args.video || args._[0]
 if (!VIDEO || !existsSync(VIDEO)) {
-  console.error('用法: node pipeline.mjs --video <mp4> [--out out] [--cues cues.json] [--base-fps 2] [--change-fps 5] [--diff-threshold 8] [--window 2] [--max-group 8] [--fallback-samples 3]')
+  console.error('用法: node pipeline.mjs --video <mp4> [--out out] [--cues cues.json] [--base-fps 2] [--change-fps 5] [--diff-threshold 8] [--window 2] [--max-group 8] [--fallback-samples 3] [--force]')
   process.exit(1)
 }
 const OUT = args.out || 'out'
@@ -48,6 +48,7 @@ const WINDOW = Number(args.window || 2)
 const MAX_GROUP = Number(args['max-group'] || 8)
 const FALLBACK_SAMPLES = Number(args['fallback-samples'] || 3)
 const PAGE_SCALE = Number(args['page-scale'] || 1.8)
+const FORCE = args.force === true
 const PAGE_FRAMES = 6
 const MAX_EXTRA_PER_CUE = 12
 const MAX_EXTRA_TOTAL = 120
@@ -458,7 +459,15 @@ async function main() {
   const tAll = Date.now()
   let tPrev = tAll
   const lap = (name) => { const now = Date.now(); console.log(`[timing] ${name}: ${((now - tPrev) / 1000).toFixed(1)}s（累计 ${((now - tAll) / 1000).toFixed(1)}s）`); tPrev = now }
-  if (existsSync(OUT)) rmSync(OUT, { recursive: true, force: true })
+  if (existsSync(OUT)) {
+    const st = lstatSync(OUT)
+    if (st.isSymbolicLink() || !st.isDirectory()) throw new Error('输出路径必须是普通目录，不能是文件或符号链接')
+    if (FORCE) {
+      rmSync(OUT, { recursive: true, force: true })
+    } else if (readdirSync(OUT).length > 0) {
+      throw new Error(`输出目录非空：${OUT}。请使用新的目录，或显式传入 --force 覆盖。`)
+    }
+  }
   mkdirSync(join(OUT, 'grids'), { recursive: true })
 
   const { duration, fps, width, height } = probe()
