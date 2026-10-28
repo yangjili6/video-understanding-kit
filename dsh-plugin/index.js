@@ -14,7 +14,7 @@ import { basename, extname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const name = 'dsh-video-kit'
-export const version = '0.1.0'
+export const version = '0.1.1'
 export const inject = ['tools']
 
 const KIT_DIR = join(fileURLToPath(new URL('./lib/videokit/', import.meta.url)))
