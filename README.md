@@ -8,7 +8,7 @@
 
 ![Video Understanding Kit 工作流程](workflow.svg)
 
-网格适合快速浏览和定位；需要确认小字、细节动作或不确定内容时，再打开对应页面或原始帧。分组依据镜头边界，便于整理时间线，有一定的语义场景划分。
+网格适合快速浏览和定位；需要确认小字、细节动作或不确定内容时，再打开对应页面或原始帧。镜头边界与画面变化用于时间导航，不代表语义场景或完整事件划分。
 
 ## 能力一览
 
@@ -51,7 +51,7 @@ node pipeline.mjs --video video.mp4 --out out --asr
 node pipeline.mjs --video video.mp4 --out out --subs --asr
 
 # 启动本地预览服务
-node serve-preview.mjs
+node serve-preview.mjs out   # 默认读取 ./out；也可传入其他输出目录
 # 浏览器打开 http://127.0.0.1:3329
 ```
 
@@ -59,13 +59,12 @@ node serve-preview.mjs
 
 ```text
 out/
-├── index.json              # 内容组、网格页、字幕、ASR 和镜头边界索引
-├── frames/                 # 带时间戳关联的采样帧
-└── grids/
-    ├── g01-p01.jpg         # 第 1 组第 1 页（每页 6 帧）
-    ├── g01-p02.jpg
-    ├── g01-sheet-1.jpg     # 第 1 组导航图（每张最多 12 页）
-    └── ...
+├── index.json              # 分组、网格页、OCR/ASR 候选与镜头边界索引
+├── base/                   # 基础采样帧
+├── extra/                  # 候选窗口的补充回看帧
+├── grids/                  # 网格页与组级导航图
+├── subs/                   # OCR 中间帧（启用 --subs 时）
+└── audio/                  # ASR 音频（启用 --asr 时）
 ```
 
 `index.json` 常用字段：
@@ -110,7 +109,7 @@ OCR 与 ASR 的结果都是识别候选，不应直接视为准确字幕或完�
 - 采样可能漏掉极短的动作、镜头或字幕。
 - OCR 可能误识艺术字、生僻字或低清文字；高置信度结果也需要核验。
 - ASR 可能误识同音词和专名，也不能可靠判断说话人归属。
-- 性能观测约为视频时长的 1.5–2.5 倍，来自 CPU/WASM 单线程、中端 Android 设备且 OCR 与 ASR 均启用的测试环境；不同设备和选项下会有差异。
+- 处理耗时会随设备性能、视频分辨率和启用的 OCR/ASR 选项明显变化；单次测试数据见 [插件实测记录](dsh-plugin/README.md)，不应视为普遍性能保证。
 
 ## 给 AI 助手的使用提示
 
