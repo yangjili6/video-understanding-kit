@@ -9,7 +9,7 @@
 //   5. 分组边界上下文：边界附近帧同时进相邻两组，共享同一 sourceFrameId，记录跨组关系；
 //   6. 自动断言：已接纳帧全部进页、组时长兜底生效、状态不被误算成完成。
 //
-// 仍是原型：无真实 STT（cues 文件模拟）、无模型阅读、无真实视频验证。
+// 原型边界：ASR/OCR 只生成候选，视觉事件语义由调用方核验；本程序不自动给出视频内容结论。
 import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync, lstatSync } from 'node:fs'
 import { join } from 'node:path'
@@ -72,7 +72,7 @@ function probe() {
 // 源帧身份：按视频帧率把请求时间映射到源帧号（可跨路径对齐同一源帧）
 const srcId = (t, fps) => `f-${String(Math.round(t * fps)).padStart(6, '0')}`
 
-// ---------------------------------------------------------------- 基础呈现帧（2fps）
+// ---------------------------------------------------------------- 基础呈现帧（默认 5fps）
 
 function extractBaseFrames(fps) {
   const dir = join(OUT, 'base')
