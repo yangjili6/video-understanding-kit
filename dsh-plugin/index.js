@@ -25,7 +25,7 @@ function toFfmpegCrop(spec) {
   const s = String(spec || '').trim()
   if (!s) return null
 
-  const imageMagick = s.match(/^(\\d+)x(\\d+)\\+(\\d+)\\+(\\d+)$/i)
+  const imageMagick = s.match(/^(\d+)x(\d+)\+(\d+)\+(\d+)$/i)
   if (imageMagick) {
     const [, w, h, x, y] = imageMagick
     if (Number(w) > 0 && Number(h) > 0) return `crop=${w}:${h}:${x}:${y}`
@@ -33,7 +33,7 @@ function toFfmpegCrop(spec) {
   }
 
   const parts = s.split(':')
-  if ((parts.length === 2 || parts.length === 4) && parts.every((v) => /^\\d+$/.test(v))) {
+  if ((parts.length === 2 || parts.length === 4) && parts.every((v) => /^\d+$/.test(v))) {
     if (Number(parts[0]) > 0 && Number(parts[1]) > 0) return `crop=${parts.join(':')}`
     throw new Error('crop 的宽高必须大于 0')
   }
@@ -43,10 +43,10 @@ function toFfmpegCrop(spec) {
 
 function outputLabel(value, fallback = 'video') {
   const raw = String(value ?? '').trim()
-  if (raw && (raw === '.' || raw === '..' || /[\\\\/]/.test(raw) || /^[A-Za-z]:/.test(raw))) {
+  if (raw && (raw === '.' || raw === '..' || raw.includes('/') || raw.includes('\\') || /^[A-Za-z]:/.test(raw))) {
     throw new Error('输出目录只接受单级名称，不能传入路径')
   }
-  const label = (raw || fallback).replace(/[^\\w\\u4e00-\\u9fa5-]/g, '_').slice(0, 80)
+  const label = (raw || fallback).replace(/[^\w\u4e00-\u9fa5-]/g, '_').slice(0, 80)
   return label || 'video'
 }
 
