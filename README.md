@@ -33,7 +33,7 @@ node download-models.mjs
 
 ### 可选：语音识别
 
-`--asr` 需要 sherpa-onnx 运行时和中文 Paraformer 模型，模型约 **227 MB**，不包含在上述 47 MB 中。安装方法见 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 和 `asr.mjs` 顶部说明。未安装时请不要传入 `--asr`；基础分组、网格和字幕功能不受影响。
+`--asr` 需要 sherpa-onnx 运行时和中文 Paraformer 模型，模型约 **217 MB**，不包含在上述 47 MB 中。安装方法见 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 和 `asr.mjs` 顶部说明。未安装时请不要传入 `--asr`；基础分组、网格和字幕功能不受影响。
 
 ## 使用
 
@@ -72,10 +72,10 @@ out/
 | 字段 | 内容 |
 |---|---|
 | `groups[]` | 内容组的起止时间、网格页和导航图 |
-| `pages[].frames[]` | 每个网格格子的时间戳与源帧 ID |
+| `groups[].pages[].frames[]` | 每个网格格子的时间戳、源帧 ID 与提取 ID |
 | `subs[]` | OCR 字幕候选；`review` 用于标记建议核验的条目 |
-| `candidates[]` | ASR 转写候选 |
-| `cuts[]` | TransNetV2 检测到的镜头边界 |
+| `candidates[]` | cues/ASR 候选及回看状态 |
+| `boundaries[]` | 分组边界类型及左右组、边界帧关系 |
 
 OCR 与 ASR 的结果都是识别候选，不应直接视为准确字幕或完整语音记录。关键文字、数字和台词请结合原帧或音频核验。
 
