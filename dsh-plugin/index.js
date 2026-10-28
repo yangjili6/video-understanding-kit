@@ -74,7 +74,7 @@ function resolveFfmpeg() {
 /** 工作目录：$DSH_HOME/storages/dsh-video-kit */
 function storageRoot() {
   const home = process.env.DSH_HOME || homedir()
-  return process.env.DSH_VIDEO_KIT_DIR || join(home, 'storages', 'dsh-video-kit')
+  return resolve(process.env.DSH_VIDEO_KIT_DIR || join(home, 'storages', 'dsh-video-kit'))
 }
 
 const jsonOut = {
@@ -280,8 +280,8 @@ export function apply(ctx) {
           elapsedMs: Date.now() - t0,
           nextStep:
             subs.length > 0
-              ? '字幕已给出（含时间戳）。需要画面证据时用 video_frame 传 t=<秒> 取原帧；或按需 read_image 打开 gridsDir 下的组拼图。'
-              : '没有字幕。改用 groupsDetail 定位，再 read_image 打开对应网格页核对画面。',
+              ? '字幕已给出（含时间戳）。需要画面证据时用 video_frame 传 video=<原始本地路径或同一B站链接> 和 t=<秒> 取原帧；也可 read_image 打开 gridsDir 下的组拼图。'
+              : '没有字幕。改用 groupsDetail 定位；用 video_frame 传 video=<原始本地路径或同一B站链接> 和 t=<秒>，或 read_image 打开对应网格页核对。',
         }
       } catch (e) {
         return { ok: false, error: String(e?.message || e) }
