@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { createWriteStream, existsSync } from 'node:fs'
 import { Readable } from 'node:stream'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm } from 'node:fs/promises'
 import { pipeline } from 'node:stream/promises'
 import { homedir } from 'node:os'
 import { basename, extname, isAbsolute, join, resolve } from 'node:path'
@@ -28,14 +28,23 @@ function toFfmpegCrop(spec) {
   const imageMagick = s.match(/^(\d+)x(\d+)\+(\d+)\+(\d+)$/i)
   if (imageMagick) {
     const [, w, h, x, y] = imageMagick
-    if (Number(w) > 0 && Number(h) > 0) return `crop=${w}:${h}:${x}:${y}`
-    throw new Error('crop 的宽高必须大于 0')
+    const values = [w, h, x, y].map(Number)
+    if (values.every(Number.isSafeInteger) && values[0] > 0 && values[1] > 0 &&
+        values[0] <= 16384 && values[1] <= 16384 && values[2] <= 32768 && values[3] <= 32768) {
+      return `crop=${w}:${h}:${x}:${y}`
+    }
+    throw new Error('crop 尺寸或偏移超出允许范围')
   }
 
   const parts = s.split(':')
   if ((parts.length === 2 || parts.length === 4) && parts.every((v) => /^\d+$/.test(v))) {
-    if (Number(parts[0]) > 0 && Number(parts[1]) > 0) return `crop=${parts.join(':')}`
-    throw new Error('crop 的宽高必须大于 0')
+    const values = parts.map(Number)
+    if (values.every(Number.isSafeInteger) && values[0] > 0 && values[1] > 0 &&
+        values[0] <= 16384 && values[1] <= 16384 &&
+        (values.length === 2 || (values[2] <= 32768 && values[3] <= 32768))) {
+      return `crop=${parts.join(':')}`
+    }
+    throw new Error('crop 尺寸或偏移超出允许范围')
   }
 
   throw new Error('crop 格式无效；请使用 WxH+X+Y 或 W:H:X:Y')
