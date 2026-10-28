@@ -171,8 +171,10 @@ function runPipeline(videoPath, outDir, opts = {}) {
     })
     let out = ''
     let err = ''
-    child.stdout.on('data', (d) => (out += d))
-    child.stderr.on('data', (d) => (err += d))
+    const keepLogChars = 16000
+    const appendTail = (current, chunk) => (current + chunk.toString()).slice(-keepLogChars)
+    child.stdout.on('data', (d) => (out = appendTail(out, d)))
+    child.stderr.on('data', (d) => (err = appendTail(err, d)))
     child.on('error', reject)
     child.on('close', (code) => {
       if (code === 0) resolvePromise({ code, out, err })
@@ -345,7 +347,7 @@ export function apply(ctx) {
         let stderr = ''
         const code = await new Promise((res) => {
           const c = spawn(ffmpegBin, ffArgs, { stdio: ['ignore', 'ignore', 'pipe'] })
-          c.stderr.on('data', (d) => (stderr += d))
+          c.stderr.on('data', (d) => (stderr = (stderr + d.toString()).slice(-4000)))
           c.on('error', (e) => { stderr = e.message; res(-1) })
           c.on('close', (x) => res(x))
         })
