@@ -91,9 +91,16 @@ async function resolveVideo(input) {
     return raw
   }
 
-  // b23.tv / bilibili 短链：取页面 canonical
+  const inputUrl = new URL(raw)
+  if (inputUrl.protocol !== 'https:') throw new Error('视频链接必须使用 HTTPS')
+  const host = inputUrl.hostname.toLowerCase()
+  const isShortLink = host === 'b23.tv' || host === 'bili2233.cn' || host.endsWith('.bili2233.cn')
+  const isBilibiliHost = host === 'bilibili.com' || host.endsWith('.bilibili.com')
+  if (!isShortLink && !isBilibiliHost) throw new Error('目前只支持 Bilibili 视频链接，不支持任意 HTTP 直链')
+
+  // b23.tv / bili2233 短链：取页面 canonical
   let pageUrl = raw
-  if (/b23\.tv|bili2233/i.test(pageUrl)) {
+  if (isShortLink) {
     const r = await fetch(pageUrl, { signal: AbortSignal.timeout(30000) })
     if (!r.ok) throw new Error(`短链解析失败 HTTP ${r.status}`)
     const html = await r.text()
