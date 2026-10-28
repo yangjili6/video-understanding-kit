@@ -4,8 +4,11 @@
 //          图片由调用方按需用 read_image 打开指定网格页。
 
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { createWriteStream, existsSync } from 'node:fs'
+import { Readable } from 'node:stream'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { pipeline } from 'node:stream/promises'
 import { homedir } from 'node:os'
 import { basename, extname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -21,11 +24,30 @@ const PIPELINE = join(KIT_DIR, 'pipeline.mjs')
 function toFfmpegCrop(spec) {
   const s = String(spec || '').trim()
   if (!s) return null
-  const m = s.match(/^(\d+)x(\d+)\+(-?\d+)\+(-?\d+)$/i)
-  if (m) return `crop=${m[1]}:${m[2]}:${m[3]}:${m[4]}`
-  // 已经是 ffmpeg 语法（W:H:X:Y）就直接透传
-  if (/^\d+:\d+(:\d+:\d+)?$/.test(s)) return `crop=${s}`
-  return `crop=${s}`
+
+  const imageMagick = s.match(/^(\\d+)x(\\d+)\\+(\\d+)\\+(\\d+)$/i)
+  if (imageMagick) {
+    const [, w, h, x, y] = imageMagick
+    if (Number(w) > 0 && Number(h) > 0) return `crop=${w}:${h}:${x}:${y}`
+    throw new Error('crop 的宽高必须大于 0')
+  }
+
+  const parts = s.split(':')
+  if ((parts.length === 2 || parts.length === 4) && parts.every((v) => /^\\d+$/.test(v))) {
+    if (Number(parts[0]) > 0 && Number(parts[1]) > 0) return `crop=${parts.join(':')}`
+    throw new Error('crop 的宽高必须大于 0')
+  }
+
+  throw new Error('crop 格式无效；请使用 WxH+X+Y 或 W:H:X:Y')
+}
+
+function outputLabel(value, fallback = 'video') {
+  const raw = String(value ?? '').trim()
+  if (raw && (raw === '.' || raw === '..' || /[\\\\/]/.test(raw) || /^[A-Za-z]:/.test(raw))) {
+    throw new Error('输出目录只接受单级名称，不能传入路径')
+  }
+  const label = (raw || fallback).replace(/[^\\w\\u4e00-\\u9fa5-]/g, '_').slice(0, 80)
+  return label || 'video'
 }
 
 /** 定位 ffmpeg：扩展中心装的在 extensions/ffmpeg/bin，不在引擎 PATH 里 */
@@ -108,9 +130,14 @@ async function downloadVideo(dl, destDir) {
     signal: AbortSignal.timeout(600000),
   })
   if (!r.ok) throw new Error(`下载失败 HTTP ${r.status}`)
-  const buf = Buffer.from(await r.arrayBuffer())
-  await writeFile(dest, buf)
-  return { path: dest, bytes: buf.length }
+  if (!r.body) throw new Error('下载响应没有内容')
+  try {
+    await pipeline(Readable.fromWeb(r.body), createWriteStream(dest, { flags: 'wx' }))
+  } catch (e) {
+    await rm(dest, { force: true }).catch(() => {})
+    throw e
+  }
+  return { path: dest, bytes: Number(r.headers.get('content-length')) || null }
 }
 
 /** 跑 pipeline，返回 stdout 摘要 */
@@ -152,14 +179,14 @@ export function apply(ctx) {
   tools.push({
     name: 'video_analyze',
     description:
-      '看视频（本地路径或 B站/直链）→ 返回字幕时间线、内容分组、网格页路径。' +
-      '**看视频必须先调这个，不要自己跑 ffmpeg 抽帧读图**。' +
-      '返回的是文本摘要（省 token）；需要画面证据时再用 video_frame 取原帧，或按需 read_image 打开返回的网格页。',
+      '看视频（本地路径或 B站视频链接）→ 返回字幕时间线、内容分组、网格页路径。' +
+      '**目前不支持任意 HTTP 直链**。看视频应先调这个工具，不要自己运行 ffmpeg 抽帧。' +
+      '返回的是文本摘要；需要画面证据时再用 video_frame 传本地路径或同一 B站链接取原帧，或用 read_image 打开网格页。',
     parameters: {
       type: 'object',
       properties: {
-        video: { type: 'string', description: '视频来源：本地绝对路径 / B站链接（支持 b23.tv 短链）/ 直链' },
-        out: { type: 'string', description: '产物目录（可选，默认 storages/dsh-video-kit/<名字>-<时间>' },
+        video: { type: 'string', description: '视频来源：本地路径 / B站视频链接（支持 b23.tv 短链）；暂不支持任意 HTTP 直链' },
+        out: { type: 'string', description: '结果目录名称（可选；目录始终建在插件存储区内）' },
         subs: { type: 'boolean', description: '是否提取字幕（PP-OCR，默认 true；画面无字时传 false 提速）' },
         asr: { type: 'boolean', description: '是否跑语音识别（需要 sherpa-onnx，默认 false）' },
         baseFps: { type: 'number', description: '基础抽帧率，默认 5' },
@@ -181,18 +208,14 @@ export function apply(ctx) {
           if (!existsSync(videoPath)) return { ok: false, error: `本地文件不存在: ${videoPath}` }
         } else {
           meta = resolved.meta
-          tmpDir = join(storageRoot(), 'downloads', `dl-${Date.now()}`)
+          tmpDir = join(storageRoot(), 'downloads', `dl-${randomUUID()}`)
           const dl = await downloadVideo(resolved.download, tmpDir)
           videoPath = dl.path
         }
 
-        const outDir =
-          args.out ||
-          join(
-            storageRoot(),
-            'out',
-            `${basename(videoPath, extname(videoPath)).replace(/[^\w\u4e00-\u9fa5-]/g, '_')}-${Date.now()}`,
-          )
+        const fallbackName = meta?.title || basename(videoPath, extname(videoPath))
+        const label = outputLabel(args.out, fallbackName)
+        const outDir = join(storageRoot(), 'out', `${label}-${randomUUID()}`)
         await mkdir(outDir, { recursive: true })
 
         const { out } = await runPipeline(videoPath, outDir, {
@@ -259,9 +282,9 @@ export function apply(ctx) {
     parameters: {
       type: 'object',
       properties: {
-        video: { type: 'string', description: '视频路径（video_analyze 返回的 outDir 同级 video.mp4，或原始本地路径）' },
+        video: { type: 'string', description: '本地视频路径或 B站链接；传链接时会重新下载视频以提取帧' },
         t: { type: 'number', description: '时间点（秒）' },
-        outDir: { type: 'string', description: '输出目录（可选）' },
+        outDir: { type: 'string', description: '输出子目录名称（可选；位置限制在插件存储区）' },
         crop: { type: 'string', description: '可选裁剪区域：WxH+X+Y，例如 720x300+0+880 用于只取字幕带' },
         scale: { type: 'number', description: '可选缩放宽度（像素）' },
       },
@@ -272,34 +295,61 @@ export function apply(ctx) {
     async execute(args = {}) {
       const video = String(args.video || '')
       const t = Number(args.t)
-      if (!video || !Number.isFinite(t)) return { ok: false, error: 'video 和 t 必填' }
-      if (!existsSync(video)) return { ok: false, error: `视频不存在: ${video}` }
+      if (!video || !Number.isFinite(t) || t < 0) return { ok: false, error: 'video 和 t（非负秒数）必填' }
 
-      const outDir = args.outDir || join(storageRoot(), 'frames')
-      await mkdir(outDir, { recursive: true })
-      const dest = join(outDir, `frame-${t.toFixed(2).replace('.', '_')}-${Date.now()}.jpg`)
-
-      const vf = []
-      const cropExpr = toFfmpegCrop(args.crop)
-      if (cropExpr) vf.push(cropExpr)
-      if (args.scale) vf.push(`scale=${Math.round(Number(args.scale))}:-1`)
-      const ffArgs = ['-y', '-v', 'error', '-ss', String(t), '-i', video, '-frames:v', '1']
-      if (vf.length) ffArgs.push('-vf', vf.join(','))
-      ffArgs.push(dest)
-
-      const ffmpegBin = resolveFfmpeg()
-      let stderr = ''
-      const code = await new Promise((res) => {
-        const c = spawn(ffmpegBin, ffArgs, { stdio: ['ignore', 'ignore', 'pipe'] })
-        c.stderr.on('data', (d) => (stderr += d))
-        c.on('error', (e) => { stderr = e.message; res(-1) })
-        c.on('close', (x) => res(x))
-      })
-      if (code !== 0 || !existsSync(dest)) {
-        return { ok: false, error: `ffmpeg 取帧失败（exit ${code}）`, stderr: stderr.slice(-800), cmd: `${ffmpegBin} ${ffArgs.join(' ')}` }
+      let scale = null
+      if (args.scale !== undefined) {
+        scale = Number(args.scale)
+        if (!Number.isInteger(scale) || scale < 16 || scale > 4096) {
+          return { ok: false, error: 'scale 必须是 16 到 4096 之间的整数像素宽度' }
+        }
       }
 
-      return { ok: true, t, path: dest, hint: '用 read_image 打开这个路径查看' }
+      let tmpDir = null
+      try {
+        const resolved = await resolveVideo(video)
+        let sourcePath
+        if (typeof resolved === 'string') {
+          sourcePath = resolved
+          if (!existsSync(sourcePath)) return { ok: false, error: `视频不存在: ${sourcePath}` }
+        } else {
+          tmpDir = join(storageRoot(), 'downloads', `frame-${randomUUID()}`)
+          sourcePath = (await downloadVideo(resolved.download, tmpDir)).path
+        }
+
+        const label = outputLabel(args.outDir, 'frames')
+        const outDir = args.outDir
+          ? join(storageRoot(), 'frames', label)
+          : join(storageRoot(), 'frames')
+        await mkdir(outDir, { recursive: true })
+        const dest = join(outDir, `frame-${t.toFixed(2).replace('.', '_')}-${randomUUID()}.jpg`)
+
+        const vf = []
+        const cropExpr = toFfmpegCrop(args.crop)
+        if (cropExpr) vf.push(cropExpr)
+        if (scale !== null) vf.push(`scale=${scale}:-1`)
+        const ffArgs = ['-y', '-v', 'error', '-ss', String(t), '-i', sourcePath, '-frames:v', '1']
+        if (vf.length) ffArgs.push('-vf', vf.join(','))
+        ffArgs.push(dest)
+
+        const ffmpegBin = resolveFfmpeg()
+        let stderr = ''
+        const code = await new Promise((res) => {
+          const c = spawn(ffmpegBin, ffArgs, { stdio: ['ignore', 'ignore', 'pipe'] })
+          c.stderr.on('data', (d) => (stderr += d))
+          c.on('error', (e) => { stderr = e.message; res(-1) })
+          c.on('close', (x) => res(x))
+        })
+        if (code !== 0 || !existsSync(dest)) {
+          return { ok: false, error: `ffmpeg 取帧失败（exit ${code}）`, stderr: stderr.slice(-800) }
+        }
+
+        return { ok: true, t, path: dest, hint: '用 read_image 打开这个路径查看' }
+      } catch (e) {
+        return { ok: false, error: String(e?.message || e) }
+      } finally {
+        if (tmpDir) await rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+      }
     },
   })
 
