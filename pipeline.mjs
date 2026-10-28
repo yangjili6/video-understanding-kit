@@ -10,7 +10,7 @@
 //   6. 自动断言：已接纳帧全部进页、组时长兜底生效、状态不被误算成完成。
 //
 // 原型边界：ASR/OCR 只生成候选，视觉事件语义由调用方核验；本程序不自动给出视频内容结论。
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync, lstatSync } from 'node:fs'
 import { join } from 'node:path'
 import { transcribeVideo } from './asr.mjs'
@@ -89,57 +89,88 @@ function extractBaseFrames(fps) {
 
 // ---------------------------------------------------------------- 变化检测（5fps，分块最大差，保留触发帧对）
 
-function detectChanges(fps) {
+async function detectChanges(fps) {
   const W = 160, H = 90, B = 8
-  // 同样按原始帧号采样（select），时间 = 帧号/源帧率，与基础帧对齐
+  // 按原始帧号抽样，并逐帧处理，避免把整段 rawvideo 留在内存。
   const step = Math.max(1, Math.round(fps / CHANGE_FPS))
-  const buf = run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', VIDEO, '-vf', `select='not(mod(n,${step}))',scale=${W}:${H},format=rgb24`, '-vsync', '0', '-f', 'rawvideo', '-'], { encoding: 'buffer' })
+  const args = [
+    '-hide_banner', '-loglevel', 'error', '-i', VIDEO,
+    '-vf', 'select=not(mod(n,' + step + ')),scale=' + W + ':' + H + ',format=rgb24',
+    '-vsync', '0', '-f', 'rawvideo', '-',
+  ]
+  const child = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+  let spawnError = null
+  let stderr = ''
+  child.on('error', (e) => { spawnError = e })
+  child.stderr.on('data', (d) => { stderr = (stderr + d.toString()).slice(-4000) })
+  const closePromise = new Promise((resolve) => child.once('close', resolve))
+
   const frameSize = W * H * 3
-  const n = Math.floor(buf.length / frameSize)
-  const frames = []
-  for (let i = 0; i < n; i++) frames.push(buf.subarray(i * frameSize, (i + 1) * frameSize))
-  const diffs = []
-  for (let i = 1; i < frames.length; i++) {
-    const prev = frames[i - 1], cur = frames[i]
-    if (true) {
+  const changes = []
+  const histDiffs = []
+  const histArr = []
+  let pending = Buffer.alloc(0)
+  let prev = null
+  let frameIndex = 0
+
+  const processFrame = (cur) => {
+    const i = frameIndex++
+    const t = (i * step) / fps
+    const hist = new Float32Array(48)
+    for (let p = 0; p < cur.length; p += 3) {
+      hist[Math.floor(cur[p] / 16)]++
+      hist[16 + Math.floor(cur[p + 1] / 16)]++
+      hist[32 + Math.floor(cur[p + 2] / 16)]++
+    }
+    const pixels = cur.length / 3
+    for (let k = 0; k < 48; k++) hist[k] /= pixels
+    histArr.push({ t, h: hist })
+
+    if (prev) {
       let maxBlock = 0
       for (let by = 0; by < H; by += B) {
         for (let bx = 0; bx < W; bx += B) {
-          let sum = 0, cnt = 0
+          let sum = 0, count = 0
           const yEnd = Math.min(by + B, H), xEnd = Math.min(bx + B, W)
           for (let y = by; y < yEnd; y++) {
             for (let x = bx; x < xEnd; x++) {
               const p = (y * W + x) * 3
               sum += Math.abs(cur[p] - prev[p]) + Math.abs(cur[p + 1] - prev[p + 1]) + Math.abs(cur[p + 2] - prev[p + 2])
-              cnt += 3
+              count += 3
             }
           }
-          maxBlock = Math.max(maxBlock, sum / cnt)
+          maxBlock = Math.max(maxBlock, sum / count)
         }
       }
-      diffs.push({ prevT: ((i - 1) * step) / fps, curT: (i * step) / fps, t: (i * step) / fps, score: Number(maxBlock.toFixed(3)) })
+      const prevT = ((i - 1) * step) / fps
+      changes.push({ prevT, curT: t, t, score: Number(maxBlock.toFixed(3)) })
+      let histDiff = 0
+      for (let k = 0; k < 48; k++) histDiff += Math.abs(hist[k] - prev.hist[k])
+      histDiffs.push({ t, d: Number((histDiff / 2).toFixed(4)) })
     }
+    prev = { frame: cur, hist }
   }
-  // 直方图差异（全局/内容）：RGB 各 16 桶，L1/2 归一化。对构图/颜色变化敏感，对局部动作相对不敏感
-  const hists = frames.map((f) => {
-    const h = new Float32Array(48)
-    for (let i = 0; i < f.length; i += 3) {
-      h[Math.floor(f[i] / 16)]++
-      h[16 + Math.floor(f[i + 1] / 16)]++
-      h[32 + Math.floor(f[i + 2] / 16)]++
+
+  try {
+    for await (const chunk of child.stdout) {
+      pending = pending.length ? Buffer.concat([pending, chunk]) : chunk
+      while (pending.length >= frameSize) {
+        const frame = Buffer.from(pending.subarray(0, frameSize))
+        pending = pending.subarray(frameSize)
+        processFrame(frame)
+      }
     }
-    const m = f.length / 3
-    for (let k = 0; k < 48; k++) h[k] /= m
-    return h
-  })
-  const histDiffs = []
-  for (let i = 1; i < hists.length; i++) {
-    let sum = 0
-    for (let k = 0; k < 48; k++) sum += Math.abs(hists[i][k] - hists[i - 1][k])
-    histDiffs.push({ t: (i * step) / fps, d: Number((sum / 2).toFixed(4)) })
+  } catch (e) {
+    child.kill()
+    throw e
   }
-  // 阈值判定 + 合并相邻（间隔 <= 0.5s 同一段），保留每个触发帧对作为锚点
-  const hits = diffs.filter((d) => d.score >= DIFF_TH)
+
+  const code = await closePromise
+  if (spawnError) throw spawnError
+  if (code !== 0) throw new Error('ffmpeg 帧差解码失败：' + (stderr || '无错误详情'))
+  if (pending.length) throw new Error('ffmpeg 输出了不完整的 RGB 帧')
+
+  const hits = changes.filter((d) => d.score >= DIFF_TH)
   const segs = []
   for (const h of hits) {
     const last = segs[segs.length - 1]
@@ -151,10 +182,8 @@ function detectChanges(fps) {
       segs.push({ from: h.curT, to: h.curT, peak: h.score, anchors: [{ prevT: h.prevT, curT: h.curT, score: h.score }] })
     }
   }
-  const histArr = frames.map((f, i) => ({ t: (i * step) / fps, h: hists[i] }))
-  return { changes: diffs, segs, histDiffs, hists: histArr }
+  return { changes, segs, histDiffs, hists: histArr }
 }
-
 // ---------------------------------------------------------------- 候选（cues 模拟字幕/STT）
 
 function loadCues() {
@@ -477,7 +506,7 @@ async function main() {
   lap('抽基础帧')
   console.log(`[2/6] 基础帧 ${baseFrames.length} 张（${BASE_FPS}fps，源帧 ID f-xxxxxx）`)
 
-  const { changes, segs, histDiffs, hists } = detectChanges(fps)
+  const { changes, segs, histDiffs, hists } = await detectChanges(fps)
   lap('帧差检测')
   console.log('[3b] TransNetV2 镜头边界检测（预训练模型）...')
   const { cuts: tCuts } = await detectCuts(VIDEO, { fps: 5, thr: 0.5 })
