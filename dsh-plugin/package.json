@@ -20,7 +20,7 @@
     "id": "dsh-video-kit",
     "name": "视频理解工具包",
     "version": "0.1.1",
-    "permissions": "工具注册, DSH storages 数据目录读写, 本机进程调用（ffmpeg / pipeline）",
+    "permissions": "工具注册，DSH storages 数据目录读写，本机进程调用（ffmpeg / pipeline），网络访问（B站短链解析及视频下载）",
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
