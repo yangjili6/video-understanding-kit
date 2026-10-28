@@ -4,12 +4,13 @@ import { readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const req = createRequire(import.meta.url)
 ort.env.wasm.wasmPaths = dirname(req.resolve('onnxruntime-web')) + '/'
 ort.env.wasm.numThreads = 1
 const run = (c, a, o = {}) => execFileSync(c, a, { encoding: 'utf8', maxBuffer: 512 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], ...o })
-const APP = dirname(new URL(import.meta.url).pathname)
+const APP = dirname(fileURLToPath(import.meta.url))
 const W = 48, H = 27, WIN = 100, STRIDE = 50
 
 let session = null
@@ -39,7 +40,7 @@ export async function detectCuts(video, opts = {}) {
     }
     const tensor = new ort.Tensor('float32', data, [1, WIN, H, W, 3])
     const out = await s.run({ [s.inputNames[0]]: tensor })
-    const all = out['535'].data
+    const all = out[s.outputNames[0]].data
     for (let f = 0; f < WIN; f++) {
       const idx = start + f
       if (idx < T) { probs[idx] += all[f]; counts[idx]++ }
