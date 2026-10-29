@@ -38,8 +38,15 @@ function extractAudio(video, outWav) {
 }
 
 // 静音检测 → 语音段（互补区间）
-function detectSpeechSegments(wav) {
-  const r = spawnSync('ffmpeg', ['-hide_banner', '-i', wav, '-af', 'silencedetect=noise=-30dB:d=0.4', '-f', 'null', '-'], { encoding: 'utf8' })
+// 阈值可调：实拍片有人声轻、底噪高的，-30dB 会把轻声说话整段判成静音。
+// 2026-10-30 实测一个 30s 实拍片：-30dB 切 7 段捞到 4 条，-40dB 切 8 段捞到 5 条
+// （多出「游戏」「没有」）。但再放宽到 -50dB 反而只剩 2 条 —— 段被拉太长，识别跑偏。
+// 所以默认保持 -30dB 稳定，需要时用 ASR_SILENCE_DB / ASR_MIN_SILENCE 调。
+function detectSpeechSegments(wav, opts = {}) {
+  const noiseDb = Number(process.env.ASR_SILENCE_DB ?? opts.noiseDb ?? 30)
+  const minSilence = Number(process.env.ASR_MIN_SILENCE ?? opts.minSilence ?? 0.4)
+  const filter = `silencedetect=noise=-${noiseDb}dB:d=${minSilence}`
+  const r = spawnSync('ffmpeg', ['-hide_banner', '-i', wav, '-af', filter, '-f', 'null', '-'], { encoding: 'utf8' })
   const log = String(r.stderr || '')
   const silences = []
   const starts = [...log.matchAll(/silence_start:\s*([0-9.]+)/g)].map((m) => Number(m[1]))
@@ -54,6 +61,34 @@ function detectSpeechSegments(wav) {
   }
   segs.push({ start: cursor, end: null }) // null = 到结尾
   return segs
+}
+
+/**
+ * 超长段等分。paraformer 是整段一次性解码，一段喂进 80 多秒会明显跑偏
+ * （2026-10-30 实测：动画片用 -35dB 切出 86s / 124s 两段，识别出的文本
+ * 出现「冻筷子」「滑管」这类错字，且时间戳粒度粗到没用）。
+ * 默认上限 25s，可用 ASR_MAX_SEG 调。
+ */
+function splitLongSegs(segs, duration, maxLen) {
+  if (!(maxLen > 0)) return segs
+  const out = []
+  for (const s of segs) {
+    const start = Number(s.start) || 0
+    // 最后一段的 end 是 null（表示「到结尾」）；Number(null) === 0 会让 len 变负、
+    // 把 124 秒的段当 0 秒放过 —— 必须显式判空。
+    const end = s.end === null || s.end === undefined ? duration : Number(s.end)
+    const len = end - start
+    if (!(len > maxLen)) {
+      out.push(s)
+      continue
+    }
+    const n = Math.ceil(len / maxLen)
+    const step = len / n
+    for (let k = 0; k < n; k++) {
+      out.push({ start: start + k * step, end: start + (k + 1) * step })
+    }
+  }
+  return out
 }
 
 export function transcribeVideo(video, opts = {}) {
@@ -71,11 +106,14 @@ export function transcribeVideo(video, opts = {}) {
   const wave = sherpa.readWave(wav)
   const sr = wave.sampleRate
   const duration = wave.samples.length / sr
-  const segs = detectSpeechSegments(wav)
-  console.log(`[asr] 音频 ${duration.toFixed(1)}s，语音段 ${segs.length} 个`)
+  const rawSegs = detectSpeechSegments(wav)
+  const maxSeg = Number(process.env.ASR_MAX_SEG ?? 25)
+  const segs = splitLongSegs(rawSegs, duration, maxSeg)
+  console.log(`[asr] 音频 ${duration.toFixed(1)}s，语音段 ${rawSegs.length} 个${segs.length !== rawSegs.length ? ` → 超长切分后 ${segs.length} 段（上限 ${maxSeg}s）` : ''}`)
 
   const cues = []
   const t1 = Date.now()
+  let dropped = 0
   for (let i = 0; i < segs.length; i++) {
     const { start, end } = segs[i]
     const s = Math.max(0, start - 0.1)
@@ -87,8 +125,23 @@ export function transcribeVideo(video, opts = {}) {
     recognizer.decode(stream)
     const r = recognizer.getResult(stream)
     const text = String(r.text || '').replace(/\s+/g, '').trim()
-    if (text) cues.push({ id: `c${String(cues.length + 1).padStart(2, '0')}`, s: Number(s.toFixed(2)), e: Number(e.toFixed(2)), text })
+    if (!text) continue
+    // 底噪/音乐里常被硬识别成「啊」「啊啊」「嗯」这类语气片段，不携带信息却占一条候选。
+    if (isNoiseOnly(text)) {
+      dropped++
+      continue
+    }
+    cues.push({ id: `c${String(cues.length + 1).padStart(2, '0')}`, s: Number(s.toFixed(2)), e: Number(e.toFixed(2)), text })
   }
+  if (dropped) console.log(`[asr] 丢弃纯语气片段 ${dropped} 条`)
   console.log(`[asr] 识别完成 ${((Date.now() - t1) / 1000).toFixed(1)}s，有效 cue ${cues.length} 条`)
   return cues
+}
+
+/** 只由 1~3 个语气字组成、没有任何实词的片段，视为底噪误识别。 */
+function isNoiseOnly(text) {
+  const t = text.replace(/[，。！？、,.!?…~～\s]/g, '')
+  if (!t) return true
+  if (t.length > 3) return false
+  return /^[啊哦嗯呃唉哎哈嘿呀哇喔噢欸呢呐啦哟]+$/.test(t)
 }

@@ -598,6 +598,14 @@ async function main() {
       pages: g.pages.map((p) => ({ page: p.page, file: p.file, frames: p.frames })),
       sheets: g.sheets || [],
     })),
+    // ASR 台词单独成段：candidates 里混着补帧状态机字段，调用方只想问
+    // 「有没有台词、台词是什么」，不该去 candidates 里按 extraction 状态筛。
+    asr: {
+      enabled: ASR,
+      cues: ASR
+        ? cues.map((c) => ({ id: c.id, s: Number(c.s.toFixed(2)), e: Number(c.e.toFixed(2)), text: c.text }))
+        : [],
+    },
     subs: subs.map((x) => ({
       start: x.start, end: x.end, t: x.t, text: x.text, conf: x.conf,
       review: (x.conf < 0.85 || /[0-9]/.test(x.text) || x.text.length < 3) ? [x.conf < 0.85 ? 'low_conf' : null, /[0-9]/.test(x.text) ? 'digits' : null, x.text.length < 3 ? 'short' : null].filter(Boolean) : null,
