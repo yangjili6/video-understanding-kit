@@ -73,6 +73,26 @@ export async function extractSubtitles(video, outDir, opts = {}) {
   const smallFs = 160 * 90
   const SKIP_TH = Number(process.env.SUBS_SKIP_TH || 3.0)
 
+  // 预探测：全片 OCR 前先均匀抽 12 帧试一遍，一帧字幕行都没有就直接收工。
+  // 纯人物/风景的画面经常完全没烧录字幕（2026-10-30 实测：210s 的片子
+  // 420 帧全量 OCR 约 220s，结果 0 条）。预探测 12 帧约 6s，能省掉整轮。
+  // 判定保守：只要有一帧命中就照常全量跑，不做进一步裁剪。
+  const PROBE_N = Number(process.env.SUBS_PROBE_N ?? 12)
+  if (opts.probe !== false && PROBE_N > 0 && files.length > PROBE_N * 2) {
+    let hit = 0
+    for (let k = 0; k < PROBE_N; k++) {
+      const idx = Math.floor(((k + 0.5) * files.length) / PROBE_N)
+      try {
+        if (selectSubtitleLine(await detect(join(frameDir, files[idx])), FW, FH)) hit++
+      } catch { /* 单帧失败不计命中 */ }
+    }
+    console.log(`  [subs] 预探测 ${PROBE_N} 帧，命中 ${hit}`)
+    if (hit === 0) {
+      console.log('  [subs] 全程没有字幕行，跳过全量 OCR')
+      return []
+    }
+  }
+
   const frames = []
   let lastBoxes = []
   let prevSmall = null
