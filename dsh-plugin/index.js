@@ -5,17 +5,18 @@
 
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { createWriteStream, existsSync } from 'node:fs'
+import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { Readable } from 'node:stream'
 import { mkdir, readFile, rm } from 'node:fs/promises'
 import { pipeline } from 'node:stream/promises'
 import { homedir } from 'node:os'
-import { basename, extname, isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const name = 'dsh-video-kit'
-export const version = '0.1.1'
-export const inject = ['tools']
+export const version = '0.1.3'
+// webServer 只用来给侧栏面板提供配置读写（/dsh-video-kit-api）。
+export const inject = ['tools', 'webServer']
 
 const KIT_DIR = join(fileURLToPath(new URL('./lib/videokit/', import.meta.url)))
 const PIPELINE = join(KIT_DIR, 'pipeline.mjs')
@@ -77,9 +78,115 @@ function storageRoot() {
   return resolve(process.env.DSH_VIDEO_KIT_DIR || join(home, 'storages', 'dsh-video-kit'))
 }
 
+// ── 运行配置（侧栏面板可改，工具调用时作为默认值）────────────────────────────
+// 语义：面板上的开关是「默认行为」，工具参数显式传了就以参数为准。
+// 这样面板不用管每次调用的特例，Agent 也能针对性覆盖。
+
+const DEFAULT_CONFIG = { ocr: true, asr: false, baseFps: 5, updatedAt: null, updatedBy: null }
+
+function configFile() {
+  return join(storageRoot(), 'config.json')
+}
+
+function coerceConfig(raw) {
+  const out = { ...DEFAULT_CONFIG }
+  if (!raw || typeof raw !== 'object') return out
+  if (typeof raw.ocr === 'boolean') out.ocr = raw.ocr
+  if (typeof raw.asr === 'boolean') out.asr = raw.asr
+  const fps = Number(raw.baseFps)
+  if (Number.isFinite(fps) && fps >= 1 && fps <= 12) out.baseFps = fps
+  if (typeof raw.updatedAt === 'string') out.updatedAt = raw.updatedAt
+  if (typeof raw.updatedBy === 'string') out.updatedBy = raw.updatedBy
+  return out
+}
+
+function loadConfig() {
+  try {
+    return coerceConfig(JSON.parse(readFileSync(configFile(), 'utf8')))
+  } catch {
+    return { ...DEFAULT_CONFIG }
+  }
+}
+
+/** patch 只接受已知键；未知键忽略而不是报错（面板版本可能比 Host 新）。 */
+function saveConfig(patch, by = 'panel') {
+  const next = coerceConfig({ ...loadConfig(), ...(patch && typeof patch === 'object' ? patch : {}) })
+  next.updatedAt = new Date().toISOString()
+  next.updatedBy = by
+  mkdirSync(dirname(configFile()), { recursive: true })
+  writeFileSync(configFile(), JSON.stringify(next, null, 2), 'utf8')
+  return next
+}
+
 const jsonOut = {
   schema: { type: 'object', additionalProperties: true },
   render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+}
+
+// ── 侧栏面板 API 的小工具 ───────────────────────────────────────────────────
+
+const API_ROUTE = '/dsh-video-kit-api'
+
+function sendJson(res, status, payload) {
+  if (!res || typeof res.writeHead !== 'function') return
+  const body = JSON.stringify(payload)
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+  res.end(body)
+}
+
+function readJsonBody(req) {
+  return new Promise((resolvePromise, reject) => {
+    let raw = ''
+    req.on('data', (d) => {
+      raw += d
+      if (raw.length > 64 * 1024) reject(new Error('请求体过大'))
+    })
+    req.on('end', () => {
+      if (!raw.trim()) return resolvePromise({})
+      try {
+        resolvePromise(JSON.parse(raw))
+      } catch {
+        reject(new Error('请求体不是合法 JSON'))
+      }
+    })
+    req.on('error', reject)
+  })
+}
+
+/** 最近几次运行的概况（按目录名里的时间戳 + index.json 摘要）。 */
+function recentRuns(limit = 6) {
+  const outRoot = join(storageRoot(), 'out')
+  if (!existsSync(outRoot)) return []
+  const dirs = readdirSync(outRoot, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => {
+      const full = join(outRoot, d.name)
+      let mtime = 0
+      try {
+        mtime = statSync(join(full, 'index.json')).mtimeMs
+      } catch {
+        mtime = statSync(full).mtimeMs
+      }
+      return { name: d.name, dir: full, mtime }
+    })
+    .sort((a, b) => b.mtime - a.mtime)
+    .slice(0, limit)
+
+  return dirs.map((d) => {
+    let summary = null
+    try {
+      const idx = JSON.parse(readFileSync(join(d.dir, 'index.json'), 'utf8'))
+      summary = {
+        duration: Number(idx.duration ?? 0),
+        groups: (idx.groups || []).length,
+        subs: (idx.subs || []).length,
+        asr: idx.asr?.enabled ? (idx.asr.cues || []).length : null,
+      }
+    } catch {
+      summary = null
+    }
+    return { name: d.name, at: new Date(d.mtime).toISOString(), dir: d.dir, summary }
+  })
 }
 
 /** 解析外部视频链接 → 本地可下载直链或本地路径 */
@@ -205,9 +312,9 @@ export function apply(ctx) {
       properties: {
         video: { type: 'string', description: '视频来源：本地路径 / B站视频链接（支持 b23.tv 短链）；暂不支持任意 HTTP 直链' },
         out: { type: 'string', description: '结果目录名称（可选；目录始终建在插件存储区内）' },
-        subs: { type: 'boolean', description: '是否提取字幕（PP-OCR，默认 true；画面无字时传 false 提速）' },
-        asr: { type: 'boolean', description: '是否跑语音识别（需要 sherpa-onnx，默认 false）' },
-        baseFps: { type: 'number', description: '基础抽帧率，默认 5' },
+        subs: { type: 'boolean', description: '是否提取硬字幕（PP-OCR）。不传则用侧栏面板配置（默认开）；画面无字时传 false 提速' },
+        asr: { type: 'boolean', description: '是否跑语音识别（本地 sherpa-onnx）。不传则用侧栏面板配置（默认关）。视频有配音但没有硬字幕时，务必传 true，否则会漏掉台词' },
+        baseFps: { type: 'number', description: '基础抽帧率；不传则用面板配置（默认 5）' },
       },
       additionalProperties: false,
     },
@@ -236,10 +343,14 @@ export function apply(ctx) {
         const outDir = join(storageRoot(), 'out', `${label}-${randomUUID()}`)
         await mkdir(outDir, { recursive: true })
 
+        // 面板配置作为默认值；工具参数显式传布尔值就覆盖它。
+        const cfg = loadConfig()
+        const ocrOn = typeof args.subs === 'boolean' ? args.subs : cfg.ocr
+        const asrOn = typeof args.asr === 'boolean' ? args.asr : cfg.asr
         const { out } = await runPipeline(videoPath, outDir, {
-          subs: args.subs !== false,
-          asr: args.asr === true,
-          baseFps: args.baseFps,
+          subs: ocrOn,
+          asr: asrOn,
+          baseFps: args.baseFps ?? cfg.baseFps,
         })
 
         const indexPath = join(outDir, 'index.json')
@@ -260,6 +371,12 @@ export function apply(ctx) {
           review: s.review || null,
         }))
 
+        // ASR 台词：pipeline 单独出了 asr 段；老 index.json 没有就退回 candidates。
+        const asrCues = (idx.asr?.cues?.length
+          ? idx.asr.cues
+          : (idx.candidates || []).filter((c) => c.text)
+        ).map((c) => ({ s: Number(c.s), e: Number(c.e), text: String(c.text) }))
+
         const gridsDir = join(outDir, 'grids')
 
         return {
@@ -272,16 +389,23 @@ export function apply(ctx) {
             : null,
           groups: groups.length,
           groupsDetail: groups.slice(0, 40),
+          // subsCount 只统计 PP-OCR 硬字幕；asrCount 是语音台词条数。两者互不代表。
           subsCount: subs.length,
           subs,
+          asrEnabled: Boolean(idx.asr?.enabled ?? asrOn),
+          asrCount: asrCues.length,
+          asr: asrCues,
           outDir,
           gridsDir,
           indexJson: indexPath,
           elapsedMs: Date.now() - t0,
-          nextStep:
-            subs.length > 0
-              ? '字幕已给出（含时间戳）。需要画面证据时用 video_frame 传 video=<原始本地路径或同一B站链接> 和 t=<秒> 取原帧；也可 read_image 打开 gridsDir 下的组拼图。'
-              : '没有字幕。改用 groupsDetail 定位；用 video_frame 传 video=<原始本地路径或同一B站链接> 和 t=<秒>，或 read_image 打开对应网格页核对。',
+          nextStep: subs.length > 0
+            ? '硬字幕已给出（含时间戳）。需要画面证据时用 video_frame 传 video=<原始本地路径或同一B站链接> 和 t=<秒> 取原帧；也可 read_image 打开 gridsDir 下的组拼图。'
+            : asrCues.length > 0
+              ? '没有硬字幕，但有 ASR 台词（见 asr 字段）。需要画面证据时用 video_frame 取原帧，或 read_image 打开网格页核对。'
+              : asrOn
+                ? '没有字幕，也没有识别出台词（可能纯音乐/环境音）。改用 groupsDetail 定位；用 video_frame 取原帧，或 read_image 打开对应网格页核对。'
+                : '没有硬字幕，且本次未开启 ASR——如果视频有配音，重跑时传 asr:true（或在侧栏「视频理解」面板里把语音识别打开）。改用 groupsDetail 定位。',
         }
       } catch (e) {
         return { ok: false, error: String(e?.message || e) }
@@ -370,6 +494,48 @@ export function apply(ctx) {
       }
     },
   })
+
+  // ── 侧栏面板 API：/dsh-video-kit-api ────────────────────────────────────
+  // 面板只需要「读配置 / 写配置 / 看最近运行」，没有别的业务，所以不依赖 RPC。
+  const webServer = ctx.webServer ?? ctx.get('webServer')
+  if (webServer) {
+    ctx.effect(() =>
+      webServer.register({
+        kind: 'prefix',
+        path: API_ROUTE,
+        async handler(req, res) {
+          try {
+            const url = String(req.url || '').split('?')[0]
+            const rest = url.startsWith(API_ROUTE + '/') ? url.slice(API_ROUTE.length + 1) : ''
+            const method = (req.method || 'GET').toUpperCase()
+
+            if (rest === 'config' && method === 'GET') {
+              return sendJson(res, 200, {
+                ok: true,
+                config: loadConfig(),
+                defaults: DEFAULT_CONFIG,
+                storageRoot: storageRoot(),
+              })
+            }
+
+            if (rest === 'config' && method === 'POST') {
+              const body = await readJsonBody(req)
+              const next = saveConfig(body, String(body?.updatedBy || 'panel'))
+              return sendJson(res, 200, { ok: true, config: next })
+            }
+
+            if (rest === 'recent' && method === 'GET') {
+              return sendJson(res, 200, { ok: true, runs: recentRuns() })
+            }
+
+            return sendJson(res, 404, { ok: false, error: 'unknown-route', route: API_ROUTE })
+          } catch (e) {
+            return sendJson(res, 500, { ok: false, error: String(e?.message || e) })
+          }
+        },
+      }),
+    )
+  }
 
   // 工具全部 push 完之后再注册（时序：effect 必须最后）
   ctx.effect(() => {

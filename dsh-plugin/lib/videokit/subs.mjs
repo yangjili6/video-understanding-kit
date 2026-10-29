@@ -27,6 +27,34 @@ function levenshtein(a, b) {
   return prev[n]
 }
 
+// 送检帧固定缩到宽 960（见下面 ffmpeg 的 scale=960:-1）。OCR 返回的 box 是
+// **这 960 宽帧空间**的像素坐标，所以所有几何阈值都必须用帧坐标算。
+// 2026-10-30 实测事故：1280×720 的片子按 ffprobe 原始分辨率算
+// `w > W*0.3`(384) 与 `y0 > H*0.65`(468)，而字幕框在 960×540 空间只有
+// w=192 / y0=450 —— 两条判定全崩，整片 420 帧 OCR 输出 0 条。
+const FRAME_W = 960
+
+/**
+ * 从一帧的所有 OCR box 里挑出「字幕行」。
+ * 判据：够宽（短句也能过）、字高合理、位于画面下方、水平居中（挡掉左右角标）。
+ * 实测样本：字幕 cx=479（画面中心 480）、updream 角标 cx=120、bilibili 角标 cx=876。
+ */
+export function selectSubtitleLine(boxes, fw = FRAME_W, fh = FRAME_W * 9 / 16) {
+  const lines = boxes.filter((b) => {
+    const w = b.x1 - b.x0
+    const h = b.y1 - b.y0
+    const cx = (b.x0 + b.x1) / 2
+    return (
+      w > fw * 0.08 &&                    // 短字幕（5 个字约 20% 宽）也要能过
+      h > fh * 0.02 &&                    // 太扁的是横线/分隔条
+      h < fh * 0.16 &&                    // 太高的是画面主体
+      b.y0 > fh * 0.6 &&                  // 只在下方 40% 找
+      Math.abs(cx - fw / 2) < fw * 0.22   // 居中，挡掉角落水印
+    )
+  })
+  return lines.sort((a, b) => (b.x1 - b.x0) - (a.x1 - a.x0))[0] || null
+}
+
 // 提取字幕：返回 [{start, end, t, text, conf}]
 export async function extractSubtitles(video, outDir, opts = {}) {
   const FPS = opts.fps || 2
@@ -35,6 +63,9 @@ export async function extractSubtitles(video, outDir, opts = {}) {
 
   const probe = JSON.parse(run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'json', video]))
   const { width: W, height: H } = probe.streams[0]
+  // 帧空间的高度：送检帧固定 960 宽，按原始宽高比换算
+  const FW = FRAME_W
+  const FH = Math.round(FRAME_W * (H / W))
   run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', video, '-vf', `fps=${FPS},scale=960:-1`, '-q:v', '2', join(frameDir, 'f-%04d.jpg'), '-y'])
   const files = readdirSync(frameDir).filter((f) => f.endsWith('.jpg')).sort()
 
@@ -65,11 +96,10 @@ export async function extractSubtitles(video, outDir, opts = {}) {
       statDet++
     }
     lastBoxes = boxes
-    const lines = boxes.filter((b) => b.x1 - b.x0 > W * 0.3 && b.y1 - b.y0 > 15 && b.y0 > H * 0.65 && b.x0 < W * 0.6)
-    const main = lines.sort((a, b) => (b.x1 - b.x0) - (a.x1 - a.x0))[0] || null
+    const main = selectSubtitleLine(boxes, FW, FH)
     frames.push({ t: i / FPS, file: f, main, diff })
   }
-  console.log(`  det ${statDet}/${files.length} 帧，跳过 ${statSkip} 帧`)
+  console.log(`  det ${statDet}/${files.length} 帧，跳过 ${statSkip} 帧（帧空间 ${FW}×${FH}）`)
 
   const events = []
   for (const fr of frames) {
