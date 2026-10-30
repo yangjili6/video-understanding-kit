@@ -1,0 +1,4 @@
+# 模型权重不进 npm 包（约 45MB），首次使用用 download-models.mjs 拉取
+lib/videokit/lib/models/
+# 运行时依赖由 dependencies 安装，不打进包里
+lib/videokit/node_modules/
