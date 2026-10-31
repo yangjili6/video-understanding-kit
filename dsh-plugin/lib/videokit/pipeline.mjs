@@ -83,7 +83,7 @@ function extractBaseFrames(fps) {
   // 按原始帧号采样（select），不用 fps 滤镜：fps 滤镜的采样相位与编号不对齐
   // （实测 2fps 第 15 帧标称 7.0s，实际内容是 7.25s 的帧）。
   const step = Math.max(1, Math.round(fps / BASE_FPS))
-  run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', VIDEO, '-vf', `select='not(mod(n,${step}))'`, '-vsync', '0', '-q:v', '2', join(dir, '%04d.jpg')])
+  run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', VIDEO, '-vf', `select='not(mod(n,${step}))'`, '-fps_mode', 'passthrough', '-q:v', '2', join(dir, '%04d.jpg')])
   return readdirSync(dir).filter((f) => f.endsWith('.jpg')).sort().map((f, i) => {
     const t = (i * step) / fps
     return { requestTime: t, t, sourceFrameId: srcId(t, fps), extractionId: `base-${String(i).padStart(4, '0')}`, source: 'base', file: join(dir, f) }
@@ -99,7 +99,7 @@ async function detectChanges(fps) {
   const args = [
     '-hide_banner', '-loglevel', 'error', '-i', VIDEO,
     '-vf', "select='not(mod(n," + step + "))',scale=" + W + ':' + H + ',format=rgb24',
-    '-vsync', '0', '-f', 'rawvideo', '-',
+    '-fps_mode', 'passthrough', '-f', 'rawvideo', '-',
   ]
   const child = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] })
   let spawnError = null

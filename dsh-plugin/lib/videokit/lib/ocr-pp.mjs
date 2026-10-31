@@ -9,10 +9,11 @@ import { readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const req = createRequire(import.meta.url)
-ort.env.wasm.wasmPaths = dirname(req.resolve('onnxruntime-web')) + '/'
+// wasmPaths 必须是 URL：Node 的 ESM loader 在 Windows 上不接受 `D:\...` 这种绝对路径
+ort.env.wasm.wasmPaths = pathToFileURL(dirname(req.resolve('onnxruntime-web')) + '/').href
 ort.env.wasm.numThreads = 1
 
 const MEAN = [0.485, 0.456, 0.406]

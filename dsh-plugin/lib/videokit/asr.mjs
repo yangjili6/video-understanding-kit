@@ -7,16 +7,32 @@
 import { createRequire } from 'node:module'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { join, sep } from 'node:path'
 
-const APP_DIR = '/data/user/0/app.dsh.mobile/files/dsh-home/asr-app/'
-const MODEL_DIR = APP_DIR + 'models/paraformer/'
-const req = createRequire(APP_DIR)
+// sherpa-onnx 运行时目录：
+//   Android：应用私有目录（由 DSH 手机版的 asr-app 提供）
+//   其它平台：~/.dsh/asr-app，可用 DSH_ASR_APP_DIR 覆盖
+const DEFAULT_APP_DIR = process.env.DSH_ASR_APP_DIR
+  || (process.platform === 'android'
+    ? '/data/user/0/app.dsh.mobile/files/dsh-home/asr-app'
+    : join(homedir(), '.dsh', 'asr-app'))
+const APP_DIR = DEFAULT_APP_DIR.replace(/[\\/]+$/, '') + sep
+const MODEL_DIR = join(APP_DIR, 'models', 'paraformer') + sep
+const req = createRequire(join(APP_DIR, 'noop.js'))
 
 let _recognizer = null
 function getRecognizer() {
   if (_recognizer) return _recognizer
-  const sherpa = req('sherpa-onnx')
+  let sherpa
+  try {
+    sherpa = req('sherpa-onnx')
+  } catch {
+    throw new Error(
+      `ASR 不可用：在 ${APP_DIR} 下找不到 sherpa-onnx。Android 端由 asr-app 提供；` +
+      '其它平台请安装 sherpa-onnx 并用 DSH_ASR_APP_DIR 指向其目录，或在侧栏面板关闭「语音识别」。'
+    )
+  }
   const cwd = process.cwd()
   process.chdir(MODEL_DIR) // wasm 版相对路径才找得到模型（实测绝对路径不行）
   try {

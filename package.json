@@ -1,6 +1,6 @@
 {
   "name": "video-understanding-kit",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "网格法看视频：TransNet 镜头分组 + 网格 + PP-OCR 字幕 + ASR",
   "type": "module",
   "scripts": {

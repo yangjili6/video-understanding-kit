@@ -3,6 +3,20 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 版本号以 `dsh-plugin/package.json` 的 `version` 为准，根 `package.json` 与之同号。
 
+## [0.1.7] - 2026-10-31
+
+### 新增
+- **B 站链接可直接分析**：先请求一次首页取得匿名 cookie（`buvid3` 等）再调 view/playurl，并把 UA 换成完整浏览器 UA。此前裸请求会收到 `412 request was banned`。
+- **下载的视频用完即删**：`video_analyze` / `video_frame` 在 `finally` 里删除临时下载目录；另外每次分析前清理 `storages/dsh-video-kit/downloads` 下超过 6 小时的残留（进程崩溃等异常路径兜底）。
+- 桌面端可配置 ASR 运行时目录：`DSH_ASR_APP_DIR`，非 Android 平台默认 `~/.dsh/asr-app`。
+
+### 修复
+- `asr.mjs` 把运行时路径写死成 Android 私有目录，导致桌面端一开语音识别就报 `Cannot find module 'sherpa-onnx'`；现在路径可配置，且找不到时给出可读提示而不是原始堆栈。
+- ffmpeg 9 已移除 `-vsync`，抽帧改为 `-fps_mode passthrough`。
+- Windows 上 `onnxruntime-web` 的 `wasmPaths` 传的是 `D:\...` 绝对路径，Node ESM loader 只接受 URL；改为 `pathToFileURL(...).href`。
+- 插件给子进程拼 PATH 时用 `:` 作分隔符，Windows 会因此拼出一条无效 PATH；改为 `path.delimiter`。
+- Windows + ImageMagick 7 没有 `convert`/`montage`/`identify`/`compare` 独立命令：新增自动适配，把这些命令名映射到 `magick.exe`（按 `argv[0]` 分派），DLL 由 ImageMagick 安装目录提供。
+
 ## [未发布]
 
 只调整工程结构，不改变视频分析行为与输出格式。

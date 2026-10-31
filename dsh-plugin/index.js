@@ -5,12 +5,13 @@
 
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import dns from 'node:dns'
+import { copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { Readable } from 'node:stream'
-import { mkdir, readFile, rm } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, stat } from 'node:fs/promises'
 import { pipeline } from 'node:stream/promises'
 import { homedir } from 'node:os'
-import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
+import { basename, delimiter, dirname, extname, isAbsolute, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const name = 'dsh-video-kit'
@@ -190,6 +191,106 @@ function recentRuns(limit = 6) {
 }
 
 /** 解析外部视频链接 → 本地可下载直链或本地路径 */
+// ── 网络与外部工具适配 ────────────────────────────────────────────────────────
+
+// 部分网络环境里 IPv6 路由不通，Node 的 fetch 会先尝试 IPv6 然后超时
+// （实测：curl 正常、fetch 报 UND_ERR_CONNECT_TIMEOUT）。强制 IPv4 优先。
+try {
+  dns.setDefaultResultOrder('ipv4first')
+} catch { /* 老版本 Node 不支持，忽略 */ }
+
+const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+
+/** fetch + 重试：B 站链路偶发超时，失败后退避重试比直接报错可靠 */
+async function fetchWithRetry(url, options = {}, { tries = 3, timeoutMs = 60000 } = {}) {
+  let lastErr
+  for (let i = 1; i <= tries; i++) {
+    try {
+      return await fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) })
+    } catch (e) {
+      lastErr = e
+      if (i < tries) await new Promise((r) => setTimeout(r, 800 * i))
+    }
+  }
+  const code = lastErr?.cause?.code ? ` [${lastErr.cause.code}]` : ''
+  throw new Error(`网络请求失败（已重试 ${tries} 次）：${lastErr?.message || lastErr}${code}`)
+}
+
+// B 站风控：裸请求（没有 buvid3 cookie、UA 过简）会被直接拒绝，返回 412 request was banned。
+// 先访问一次首页取得匿名 cookie，再带着它调 view/playurl。取不到也照常尝试，失败时给出可读提示。
+let _biliCookie = null
+let _biliCookieErr = null
+async function bilibiliCookie() {
+  if (_biliCookie !== null) return _biliCookie
+  try {
+    // 实测部分网络到 B 站首页要 30s+，超时按 60s 给
+    const r = await fetchWithRetry('https://www.bilibili.com/', { headers: { 'User-Agent': BROWSER_UA } }, { timeoutMs: 60000 })
+    const list = typeof r.headers.getSetCookie === 'function' ? r.headers.getSetCookie() : []
+    _biliCookie = list.map((c) => String(c).split(';')[0].trim()).filter(Boolean).join('; ')
+  } catch (e) {
+    _biliCookie = ''
+    _biliCookieErr = e.message
+  }
+  return _biliCookie
+}
+
+/** 找 ImageMagick 安装目录（Windows 常见位置；其它平台交给 PATH） */
+function resolveMagickHome() {
+  if (process.env.IMAGEMAGICK_HOME) return process.env.IMAGEMAGICK_HOME
+  if (process.platform !== 'win32') return ''
+  const roots = [process.env.ProgramFiles || 'C:\\Program Files', process.env['ProgramFiles(x86)'] || ''].filter(Boolean)
+  for (const root of roots) {
+    try {
+      const hit = readdirSync(root).filter((d) => d.startsWith('ImageMagick')).sort().pop()
+      if (hit) {
+        const dir = join(root, hit)
+        if (existsSync(join(dir, 'magick.exe'))) return dir
+      }
+    } catch { /* 目录不可读，换下一个 */ }
+  }
+  return ''
+}
+
+/**
+ * ImageMagick 7 只提供 magick.exe，不再带 convert/montage/identify/compare 独立命令，
+ * 而管线是按这些命令名调用的。Windows 上把 magick.exe 复制成这 4 个名字即可
+ * （它会按 argv[0] 分派行为），DLL 直接由安装目录提供。
+ * 返回要加进 PATH 的目录；非 Windows 或 IM6（原生就带这些命令）返回空串。
+ */
+function imagemagickBinDir() {
+  if (process.platform !== 'win32') return ''
+  const home = resolveMagickHome()
+  if (!home) return ''
+  const magick = join(home, 'magick.exe')
+  if (!existsSync(magick)) return ''
+  const names = ['convert.exe', 'montage.exe', 'identify.exe', 'compare.exe']
+  if (names.every((n) => existsSync(join(home, n)))) return home
+  try {
+    const bin = join(storageRoot(), 'imagemagick-bin')
+    mkdirSync(bin, { recursive: true })
+    for (const n of names) {
+      const dst = join(bin, n)
+      if (!existsSync(dst)) copyFileSync(magick, dst)
+    }
+    return bin
+  } catch {
+    return ''
+  }
+}
+
+/** 异常退出可能残留下载目录；每次调用前清掉过期的，保证下载的视频不会长期留在磁盘 */
+async function sweepDownloads(maxAgeMs = 6 * 60 * 60 * 1000) {
+  const root = join(storageRoot(), 'downloads')
+  try {
+    const now = Date.now()
+    for (const name of await readdir(root)) {
+      const p = join(root, name)
+      const st = await stat(p).catch(() => null)
+      if (st?.isDirectory() && now - st.mtimeMs > maxAgeMs) await rm(p, { recursive: true, force: true }).catch(() => {})
+    }
+  } catch { /* 目录不存在 */ }
+}
+
 async function resolveVideo(input) {
   const raw = String(input || '').trim()
   if (!raw) throw new Error('video 不能为空')
@@ -205,10 +306,18 @@ async function resolveVideo(input) {
   const isBilibiliHost = host === 'bilibili.com' || host.endsWith('.bilibili.com')
   if (!isShortLink && !isBilibiliHost) throw new Error('目前只支持 Bilibili 视频链接，不支持任意 HTTP 直链')
 
+  // B 站 API 统一带 cookie + 完整浏览器 UA，否则会返回 412 request was banned
+  const cookie = await bilibiliCookie()
+  const biliHeaders = {
+    Referer: 'https://www.bilibili.com/',
+    'User-Agent': BROWSER_UA,
+    ...(cookie ? { Cookie: cookie } : {}),
+  }
+
   // b23.tv / bili2233 短链：取页面 canonical
   let pageUrl = raw
   if (isShortLink) {
-    const r = await fetch(pageUrl, { signal: AbortSignal.timeout(30000) })
+    const r = await fetchWithRetry(pageUrl, { headers: biliHeaders })
     if (!r.ok) throw new Error(`短链解析失败 HTTP ${r.status}`)
     const html = await r.text()
     const m = html.match(/canonical"\s+href="([^"]+)"/)
@@ -221,17 +330,31 @@ async function resolveVideo(input) {
   if (!bv && !av) throw new Error('无法从链接里识别 BV/av 号')
 
   const idQuery = bv ? `bvid=${bv[1]}` : `aid=${av[1]}`
-  const viewRes = await fetch(`https://api.bilibili.com/x/web-interface/view?${idQuery}`, {
-    headers: { Referer: 'https://www.bilibili.com/', 'User-Agent': 'Mozilla/5.0' },
-    signal: AbortSignal.timeout(30000),
+  const viewRes = await fetchWithRetry(`https://api.bilibili.com/x/web-interface/view?${idQuery}`, {
+    headers: biliHeaders,
   })
-  const view = await viewRes.json()
-  if (view.code !== 0) throw new Error(`view API 失败 ${view.code}: ${view.message}`)
+  const viewText = await viewRes.text()
+  let view
+  try {
+    view = JSON.parse(viewText)
+  } catch {
+    // 拿到 HTML 而不是 JSON：通常是风控页，或网络层被中间设备拦了
+    const ct = viewRes.headers.get('content-type') || '(无)'
+    throw new Error(
+      `view API 返回非 JSON：HTTP ${viewRes.status}，content-type=${ct}，` +
+      `${cookie ? '已带 cookie' : `未取到首页 cookie${_biliCookieErr ? `（${_biliCookieErr}）` : ''}`}，` +
+      `长度 ${viewText.length}。响应开头：${viewText.slice(0, 120).replace(/\s+/g, ' ')}`,
+    )
+  }
+  if (view.code !== 0) {
+    const hint = view.code === -412 ? '（B 站风控拒绝了请求：稍后重试，或换网络/登录后重试）' : ''
+    throw new Error(`view API 失败 ${view.code}: ${view.message}${hint}`)
+  }
   const { cid, title, duration, owner } = view.data
 
-  const playRes = await fetch(
+  const playRes = await fetchWithRetry(
     `https://api.bilibili.com/x/player/playurl?${idQuery}&cid=${cid}&fnval=1&platform=html5&qn=64`,
-    { headers: { Referer: 'https://www.bilibili.com/', 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(30000) },
+    { headers: biliHeaders },
   )
   const play = await playRes.json()
   if (play.code !== 0) throw new Error(`playurl 失败 ${play.code}: ${play.message}`)
@@ -239,19 +362,22 @@ async function resolveVideo(input) {
   if (!durl) throw new Error('没有拿到 durl 直链')
 
   return {
-    download: { url: durl, referer: 'https://www.bilibili.com/' },
+    download: { url: durl, referer: 'https://www.bilibili.com/', cookie },
     meta: { title, duration, owner: owner?.name, bvid: bv?.[1] || null },
   }
 }
 
-/** 下载到本地（带 Referer） */
+/** 下载到临时目录；调用方必须在 finally 里删除，保证视频不留在磁盘 */
 async function downloadVideo(dl, destDir) {
   await mkdir(destDir, { recursive: true })
   const dest = join(destDir, 'video.mp4')
-  const r = await fetch(dl.url, {
-    headers: { Referer: dl.referer, 'User-Agent': 'Mozilla/5.0' },
-    signal: AbortSignal.timeout(600000),
-  })
+  const r = await fetchWithRetry(dl.url, {
+    headers: {
+      Referer: dl.referer,
+      'User-Agent': BROWSER_UA,
+      ...(dl.cookie ? { Cookie: dl.cookie } : {}),
+    },
+  }, { timeoutMs: 600000 })
   if (!r.ok) throw new Error(`下载失败 HTTP ${r.status}`)
   if (!r.body) throw new Error('下载响应没有内容')
   try {
@@ -276,10 +402,14 @@ function runPipeline(videoPath, outDir, opts = {}) {
       env: {
         ...process.env,
         PATH: [
+          // Windows + ImageMagick 7：imagemagickBinDir() 提供 convert/montage 等命令名，
+          // resolveMagickHome() 提供这些 exe 依赖的 DLL。手机端两者都为空，行为不变。
+          imagemagickBinDir(),
+          resolveMagickHome(),
           join(process.env.DSH_HOME || homedir(), '..', 'engine', 'extensions', 'ffmpeg', 'bin'),
           join(process.env.DSH_HOME || homedir(), '..', 'engine', 'extensions', 'imagemagick', 'bin'),
           process.env.PATH || '',
-        ].join(':'),
+        ].filter(Boolean).join(delimiter),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
@@ -326,6 +456,7 @@ export function apply(ctx) {
       let tmpDir = null
 
       try {
+        await sweepDownloads()
         const resolved = await resolveVideo(args.video)
 
         if (typeof resolved === 'string') {
