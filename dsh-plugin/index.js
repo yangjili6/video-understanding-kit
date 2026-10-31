@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { randomUUID } from 'node:crypto'
 import dns from 'node:dns'
-import { copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { Readable } from 'node:stream'
 import { mkdir, readFile, readdir, rm, stat } from 'node:fs/promises'
 import { pipeline } from 'node:stream/promises'
@@ -111,8 +111,11 @@ const OCR_ASSETS = [
   {
     name: 'ppocr_keys_v1.txt',
     size: 26250,
+    // 实测：hf-mirror 的 RapidOCR 仓库里没有这个字典文件（404），
+    // raw.githubusercontent 在部分网络下会被重置，所以走 jsdelivr CDN。
     urls: [
-      `${HF}/SWHL/RapidOCR/resolve/main/PP-OCRv4/ppocr_keys_v1.txt`,
+      'https://fastly.jsdelivr.net/gh/PaddlePaddle/PaddleOCR@main/ppocr/utils/ppocr_keys_v1.txt',
+      'https://gcore.jsdelivr.net/gh/PaddlePaddle/PaddleOCR@main/ppocr/utils/ppocr_keys_v1.txt',
       'https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/ppocr_keys_v1.txt',
     ],
   },
@@ -250,8 +253,41 @@ async function ensureAsrRuntime() {
   if (!asrRuntimePath()) throw new Error('sherpa-onnx-node 安装后仍无法解析，请检查 npm 输出')
 }
 
-/** 下载到文件，边收边回调字节数（大文件下载时面板进度才不会一动不动） */
-async function downloadToFile(url, dest, onProgress) {
+/**
+ * 下载实现。实测：单连接被限速（44.7MB 串行 80s ≈ 0.56MB/s，
+ * 同批文件 4 并发 18.6s ≈ 2.41MB/s），所以多文件并行，
+ * 单个大文件再按 Range 分片并行。
+ */
+const MIN_CHUNK_BYTES = 6 * 1048576
+const CHUNK_COUNT = 4
+
+async function downloadRange(url, dest, start, end, onBytes) {
+  const r = await fetchWithRetry(url, { headers: { Range: `bytes=${start}-${end}` } }, { tries: 2, timeoutMs: 900000 })
+  if (r.status !== 206) throw new Error(`服务器未按 Range 返回（HTTP ${r.status}）`)
+  if (!r.body) throw new Error('响应没有内容')
+  const reader = r.body.getReader()
+  const ws = createWriteStream(dest)
+  let n = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      n += value.byteLength
+      if (onBytes) onBytes(value.byteLength)
+      if (!ws.write(Buffer.from(value))) await new Promise((res) => ws.once('drain', res))
+    }
+    await new Promise((res, rej) => {
+      ws.once('error', rej)
+      ws.end(res)
+    })
+  } catch (e) {
+    ws.destroy()
+    throw e
+  }
+  return n
+}
+
+async function downloadSingle(url, dest, onProgress) {
   const r = await fetchWithRetry(url, {}, { tries: 2, timeoutMs: 900000 })
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
   if (!r.body) throw new Error('响应没有内容')
@@ -277,6 +313,43 @@ async function downloadToFile(url, dest, onProgress) {
   return bytes
 }
 
+/** 大文件分片并行；任何一步不支持 Range 就退回单连接 */
+async function downloadToFile(url, dest, onProgress, expectedSize) {
+  const parts = []
+  if (expectedSize && expectedSize >= MIN_CHUNK_BYTES) {
+    const per = Math.ceil(expectedSize / CHUNK_COUNT)
+    for (let i = 0; i < CHUNK_COUNT; i++) {
+      const start = i * per
+      const end = Math.min(expectedSize - 1, (i + 1) * per - 1)
+      if (start > end) break
+      parts.push({ start, end, file: `${dest}.part${i}` })
+    }
+  }
+  if (parts.length > 1) {
+    let received = 0
+    try {
+      await Promise.all(
+        parts.map((p) =>
+          downloadRange(url, p.file, p.start, p.end, (n) => {
+            received += n
+            if (onProgress) onProgress(received)
+          }),
+        ),
+      )
+      const ws = createWriteStream(dest)
+      for (const p of parts) await pipeline(createReadStream(p.file), ws, { end: false })
+      await new Promise((res) => ws.end(res))
+      for (const p of parts) rmSync(p.file, { force: true })
+      return received
+    } catch {
+      for (const p of parts) rmSync(p.file, { force: true })
+      rmSync(dest, { force: true })
+      // 落到下面走单连接
+    }
+  }
+  return downloadSingle(url, dest, onProgress)
+}
+
 async function runAssetDownload(target) {
   const files = assetFiles(target)
   const dir = assetDir(target)
@@ -291,31 +364,63 @@ async function runAssetDownload(target) {
     mkdirSync(dir, { recursive: true })
     // ASR：先装运行时，再下模型（模型 227MB，装不上运行时就别白下了）
     if (target === 'asr') await ensureAsrRuntime()
+
+    const pending = []
+    let doneBytes = 0
     for (const f of files) {
       const dest = join(dir, f.name)
+      let have = false
       try {
-        if (existsSync(dest) && statSync(dest).size === f.size) continue
-      } catch { /* 继续下载 */ }
-      const tmp = `${dest}.part`
-      let lastErr = null
-      const baseMB = job.doneMB
-      for (const url of f.urls) {
-        try {
-          const size = await downloadToFile(url, tmp, (bytes) => {
-            job.doneMB = Number((baseMB + bytes / 1048576).toFixed(1))
-          })
-          if (f.size && size !== f.size) throw new Error(`大小不符 ${size}/${f.size}`)
-          renameSync(tmp, dest)
-          job.doneMB = Number((baseMB + size / 1048576).toFixed(1))
-          lastErr = null
-          break
-        } catch (e) {
-          lastErr = e
-          rmSync(tmp, { force: true })
-        }
+        have = existsSync(dest) && statSync(dest).size === f.size
+      } catch {
+        have = false
       }
-      if (lastErr) throw lastErr
+      if (have) doneBytes += f.size || 0
+      else pending.push(f)
     }
+
+    // 进度 = 已完成文件 + 各文件当前已收字节
+    const progress = new Map()
+    const syncProgress = () => {
+      let total = doneBytes
+      for (const v of progress.values()) total += v
+      job.doneMB = Number((total / 1048576).toFixed(1))
+    }
+    syncProgress()
+
+    // 文件之间并行（并发下载能绕开单连接限速），单文件内部再分片
+    let firstError = null
+    await Promise.all(
+      pending.map(async (f) => {
+        const dest = join(dir, f.name)
+        const tmp = `${dest}.part`
+        let lastErr = null
+        for (const url of f.urls) {
+          try {
+            const size = await downloadToFile(
+              url,
+              tmp,
+              (bytes) => {
+                progress.set(f.name, bytes)
+                syncProgress()
+              },
+              f.size,
+            )
+            if (f.size && size !== f.size) throw new Error(`大小不符 ${size}/${f.size}`)
+            renameSync(tmp, dest)
+            progress.set(f.name, size)
+            syncProgress()
+            return
+          } catch (e) {
+            lastErr = e
+            progress.delete(f.name)
+            rmSync(tmp, { force: true })
+          }
+        }
+        if (lastErr && !firstError) firstError = lastErr
+      }),
+    )
+    if (firstError) throw firstError
     job.status = 'done'
   } catch (e) {
     job.status = 'error'
