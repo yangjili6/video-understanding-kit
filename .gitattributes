@@ -1,0 +1,13 @@
+# 统一行尾：仓库内一律以 LF 存储与检出。
+# 否则 Windows（core.autocrlf=true）与 Linux/CI 之间会出现整文件假 diff，
+# 并让 scripts/sync-videokit.mjs 的真源/副本比对失效。
+* text=auto eol=lf
+
+# 二进制资源不参与行尾转换
+*.jpg   binary
+*.jpeg  binary
+*.png   binary
+*.onnx  binary
+*.wasm  binary
+*.mp4   binary
+*.zip   binary

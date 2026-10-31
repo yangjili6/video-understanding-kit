@@ -1,3 +1,6 @@
+// ⚠ 自动生成文件，请勿编辑。
+// 真源：subs.mjs（仓库根目录）。改完真源后运行 `pnpm run sync` 重新生成。
+// 校验：`pnpm run sync:check`，副本与真源不一致时退出码为 1。
 // 字幕提取模块（安全版：整帧差异跳帧，不做 ROI 裁剪——ROI det 实测会漏中文行）
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, readdirSync } from 'node:fs'

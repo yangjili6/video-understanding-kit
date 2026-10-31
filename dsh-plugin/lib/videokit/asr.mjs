@@ -1,3 +1,6 @@
+// ⚠ 自动生成文件，请勿编辑。
+// 真源：asr.mjs（仓库根目录）。改完真源后运行 `pnpm run sync` 重新生成。
+// 校验：`pnpm run sync:check`，副本与真源不一致时退出码为 1。
 // 语音转文字模块（sherpa-onnx Node WASM + 中文 paraformer）
 // 流程：提取音轨 → 静音检测切分语音段 → 逐段识别 → 产出带时间戳的 cues
 // 产出格式与 loadCues 一致：{ id, s, e, text }
