@@ -1,6 +1,6 @@
 # Video Understanding Kit
 
-**面向 DSH 手机版的网格法视频理解工具包。** 它把视频整理成带时间戳的采样帧、镜头分组、网格图，以及可选的字幕和语音转写，方便 AI 先快速浏览，再按时间回查证据。
+**面向 DSH 的网格法视频理解工具包。** 它把视频整理成带时间戳的采样帧、镜头分组、网格图，以及可选的字幕和语音转写，方便 AI 先快速浏览，再按时间回查证据。
 
 > **DSH 手机版仓库地址**：<https://github.com/Soodok/Deepseek-Harness-Local-Android>(力推，这是我认为做的最好的DSH-mobile)
 >
@@ -24,7 +24,7 @@
 
 ## 安装
 
-运行环境：DSH 手机版、Node.js 20 或更新版本、ffmpeg、ImageMagick。
+运行环境：DSH / DSH手机版、Node.js 20 或更新版本、ffmpeg、ImageMagick。
 
 在项目目录安装依赖并下载模型：
 
