@@ -41,6 +41,12 @@ window.__ModuleLoader__.load({
       '.dvk-switch.on{background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary)}',
       '.dvk-switch.on::after{transform:translateX(19px);background:#fff}',
       '.dvk-switch[disabled]{opacity:.45;cursor:not-allowed}',
+      '.dvk-row-side{flex:none;display:flex;align-items:center;gap:8px}',
+      '.dvk-asset-btn{font-size:11.5px;line-height:1;padding:6px 9px;border-radius:7px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);cursor:pointer;white-space:nowrap}',
+      '.dvk-asset-btn:hover{border-color:var(--dsw-alias-brand-primary)}',
+      '.dvk-asset-btn.del{color:#ef4444}',
+      '.dvk-asset-btn[disabled]{opacity:.5;cursor:not-allowed}',
+      '.dvk-asset-busy{font-size:11.5px;color:var(--dsw-alias-label-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}',
       '.dvk-num{flex:none;width:64px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:5px 8px;font-size:12.5px;text-align:center}',
       '.dvk-note{font-size:11px;line-height:1.6;color:var(--dsw-alias-label-secondary);padding:0 16px 12px}',
       '.dvk-note.warn{color:#d97706}',
@@ -136,6 +142,8 @@ window.__ModuleLoader__.load({
       const [err, setErr] = React.useState('')
       const [savedAt, setSavedAt] = React.useState(0)
       const [busy, setBusy] = React.useState(false)
+      const [assets, setAssets] = React.useState(null)
+      const [assetBusy, setAssetBusy] = React.useState(false)
       const mounted = React.useRef(true)
 
       React.useEffect(() => {
@@ -143,18 +151,29 @@ window.__ModuleLoader__.load({
         let alive = true
         ;(async () => {
           try {
-            const [c, r] = await Promise.all([apiCall('/config'), apiCall('/recent')])
+            const [c, r, a] = await Promise.all([apiCall('/config'), apiCall('/recent'), apiCall('/assets')])
             if (!alive) return
             setCfg(c.config)
             setRecent(r.runs || [])
+            setAssets(a.assets || null)
             setErr('')
           } catch (e) {
             if (alive) setErr(String((e && e.message) || e))
           }
         })()
+        // 模型下载可能持续几分钟：每 2 秒刷新一次资源状态，面板才能显示进度与「删除」
+        const timer = setInterval(async () => {
+          try {
+            const a = await apiCall('/assets')
+            if (alive) setAssets(a.assets || null)
+          } catch {
+            /* 轮询失败不打扰用户 */
+          }
+        }, 2000)
         return () => {
           alive = false
           mounted.current = false
+          clearInterval(timer)
         }
       }, [])
 
@@ -175,7 +194,72 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /** 模型资源动作：下载 / 删除。下载在后台跑，进度靠上面的轮询刷新。 */
+      async function assetAction(target, op) {
+        if (assetBusy) return
+        setAssetBusy(true)
+        try {
+          await apiCall('/assets/' + op, { method: 'POST', body: { target } })
+          const a = await apiCall('/assets')
+          if (mounted.current) {
+            setAssets(a.assets || null)
+            setErr('')
+          }
+        } catch (e) {
+          if (mounted.current) setErr(String((e && e.message) || e))
+        } finally {
+          if (mounted.current) setAssetBusy(false)
+        }
+      }
+
       const h = React.createElement
+
+      /** 开关左边的按钮：未下载 →「需要下载」；已下载 →「删除」；下载中显示进度 */
+      function AssetButton(target) {
+        const a = assets && assets[target]
+        if (!a) return null
+        const job = a.job
+        if (job && job.status === 'downloading') {
+          return h('span', { className: 'dvk-asset-busy' }, `下载中 ${job.doneMB || 0}/${job.totalMB}MB`)
+        }
+        if (job && job.status === 'error') {
+          return h(
+            'button',
+            {
+              type: 'button',
+              className: 'dvk-asset-btn',
+              disabled: assetBusy,
+              title: job.error || '',
+              onClick: () => assetAction(target, 'download'),
+            },
+            '下载失败，重试',
+          )
+        }
+        if (a.ready) {
+          return h(
+            'button',
+            {
+              type: 'button',
+              className: 'dvk-asset-btn del',
+              disabled: assetBusy,
+              onClick: () => assetAction(target, 'remove'),
+            },
+            '删除',
+          )
+        }
+        return h(
+          'button',
+          {
+            type: 'button',
+            className: 'dvk-asset-btn',
+            disabled: assetBusy,
+            title: `需要 ${a.totalMB}MB`,
+            onClick: () => assetAction(target, 'download'),
+          },
+          '需要下载',
+        )
+      }
+
       const loading = !cfg
 
       const ocrOn = !!(cfg && cfg.ocr)
@@ -212,12 +296,17 @@ window.__ModuleLoader__.load({
                 '读画面上烧录的字幕。贵在慢：按 2fps 抓帧逐张识别，纯人像画面通常一无所获。',
               ),
             ),
-            h(Switch, {
-              on: ocrOn,
-              disabled: loading || busy,
-              label: '硬字幕提取',
-              onToggle: () => patch({ ocr: !ocrOn, updatedBy: 'panel' }),
-            }),
+            h(
+              'div',
+              { className: 'dvk-row-side' },
+              AssetButton('ocr'),
+              h(Switch, {
+                on: ocrOn,
+                disabled: loading || busy,
+                label: '硬字幕提取',
+                onToggle: () => patch({ ocr: !ocrOn, updatedBy: 'panel' }),
+              }),
+            ),
           ),
           h(
             'div',
@@ -232,12 +321,17 @@ window.__ModuleLoader__.load({
                 '本地 paraformer 识别台词。视频有配音却没烧录字幕时，不开就只剩画面。',
               ),
             ),
-            h(Switch, {
-              on: asrOn,
-              disabled: loading || busy,
-              label: '语音识别',
-              onToggle: () => patch({ asr: !asrOn, updatedBy: 'panel' }),
-            }),
+            h(
+              'div',
+              { className: 'dvk-row-side' },
+              AssetButton('asr'),
+              h(Switch, {
+                on: asrOn,
+                disabled: loading || busy,
+                label: '语音识别',
+                onToggle: () => patch({ asr: !asrOn, updatedBy: 'panel' }),
+              }),
+            ),
           ),
           h(
             'div',

@@ -3,6 +3,20 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 版本号以 `dsh-plugin/package.json` 的 `version` 为准，根 `package.json` 与之同号。
 
+## [0.1.8] - 2026-11-01
+
+### 新增
+- **侧栏面板可检测并管理模型**：OCR 与 ASR 两个开关左边显示资源状态——
+  未下载时是「需要下载」，点击后后台下载并显示进度（`x/y MB`），下完变成「删除」，
+  删除后回到「需要下载」。
+  - OCR 资源：TransNetV2 + PP-OCRv4 det/rec + 字典，约 44.7 MB
+  - ASR 资源：paraformer（int8）+ tokens，约 216.8 MB；另外会检查 `sherpa-onnx` 运行时是否就位
+- 下载源优先国内镜像 `hf-mirror.com`，失败回退 HuggingFace；逐字节校验大小，失败自动清理 `.part`。
+
+### 说明
+- 下载在后台进行，不阻塞 HTTP 请求；面板每 2 秒轮询一次状态。
+- 正在下载时拒绝删除，避免文件竞争。
+
 ## [0.1.7] - 2026-10-31
 
 ### 新增

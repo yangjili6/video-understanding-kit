@@ -6,7 +6,7 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import dns from 'node:dns'
-import { copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { Readable } from 'node:stream'
 import { mkdir, readFile, readdir, rm, stat } from 'node:fs/promises'
 import { pipeline } from 'node:stream/promises'
@@ -77,6 +77,172 @@ function resolveFfmpeg() {
 function storageRoot() {
   const home = process.env.DSH_HOME || homedir()
   return resolve(process.env.DSH_VIDEO_KIT_DIR || join(home, 'storages', 'dsh-video-kit'))
+}
+
+// ── 模型资源：检测 / 下载 / 删除（侧栏面板的「需要下载 / 删除」）──────────────
+// 下载源优先用国内镜像 hf-mirror，失败再回退 huggingface。
+
+const HF = 'https://hf-mirror.com'
+const HF_BACKUP = 'https://huggingface.co'
+
+const OCR_ASSETS = [
+  {
+    name: 'transnetv2.onnx',
+    size: 31250929,
+    urls: [`${HF}/elya5/transnetv2/resolve/main/transnetv2.onnx`, `${HF_BACKUP}/elya5/transnetv2/resolve/main/transnetv2.onnx`],
+  },
+  {
+    name: 'ch_PP-OCRv4_det_infer.onnx',
+    size: 4745517,
+    urls: [
+      `${HF}/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx`,
+      `${HF_BACKUP}/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx`,
+    ],
+  },
+  {
+    name: 'ch_PP-OCRv4_rec_infer.onnx',
+    size: 10857958,
+    urls: [
+      `${HF}/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_rec_infer.onnx`,
+      `${HF_BACKUP}/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_rec_infer.onnx`,
+    ],
+  },
+  {
+    name: 'ppocr_keys_v1.txt',
+    size: 26250,
+    urls: [
+      `${HF}/SWHL/RapidOCR/resolve/main/PP-OCRv4/ppocr_keys_v1.txt`,
+      'https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/ppocr_keys_v1.txt',
+    ],
+  },
+]
+
+const ASR_ASSETS = [
+  {
+    name: 'model.int8.onnx',
+    size: 227330205,
+    urls: [`${HF}/csukuangfj/sherpa-onnx-paraformer-zh-2024-03-09/resolve/main/model.int8.onnx`],
+  },
+  {
+    name: 'tokens.txt',
+    size: 75354,
+    urls: [`${HF}/csukuangfj/sherpa-onnx-paraformer-zh-2024-03-09/resolve/main/tokens.txt`],
+  },
+]
+
+function modelsDir() {
+  return join(KIT_DIR, 'lib', 'models')
+}
+
+/** ASR 运行时目录：与 asr.mjs 保持一致 */
+function asrAppDir() {
+  const base = process.env.DSH_ASR_APP_DIR
+    || (process.platform === 'android'
+      ? '/data/user/0/app.dsh.mobile/files/dsh-home/asr-app'
+      : join(homedir(), '.dsh', 'asr-app'))
+  return base.replace(/[\\/]+$/, '')
+}
+
+function asrModelDir() {
+  return join(asrAppDir(), 'models', 'paraformer')
+}
+
+function assetFiles(target) {
+  return target === 'asr' ? ASR_ASSETS : OCR_ASSETS
+}
+
+function assetDir(target) {
+  return target === 'asr' ? asrModelDir() : modelsDir()
+}
+
+/** 检测某类资源是否就绪；ASR 还要看 sherpa-onnx 运行时在不在 */
+function assetStatus(target) {
+  const files = assetFiles(target)
+  const dir = assetDir(target)
+  const missing = []
+  let presentBytes = 0
+  for (const f of files) {
+    const p = join(dir, f.name)
+    let ok = false
+    try {
+      ok = existsSync(p) && statSync(p).size === f.size
+    } catch { ok = false }
+    if (ok) presentBytes += f.size
+    else missing.push(f.name)
+  }
+  const totalBytes = files.reduce((s, f) => s + (f.size || 0), 0)
+  const out = {
+    ready: missing.length === 0,
+    missing,
+    dir,
+    totalMB: Number((totalBytes / 1048576).toFixed(1)),
+    presentMB: Number((presentBytes / 1048576).toFixed(1)),
+  }
+  if (target === 'asr') {
+    const runtime = existsSync(join(asrAppDir(), 'node_modules', 'sherpa-onnx-node'))
+      || existsSync(join(asrAppDir(), 'node_modules', 'sherpa-onnx'))
+    out.runtime = runtime
+    if (!runtime) missing.push('sherpa-onnx 运行时')
+    out.ready = out.ready && runtime
+  }
+  return out
+}
+
+const assetJobs = new Map()
+
+async function runAssetDownload(target) {
+  const files = assetFiles(target)
+  const dir = assetDir(target)
+  const job = {
+    status: 'downloading',
+    totalMB: Number((files.reduce((s, f) => s + (f.size || 0), 0) / 1048576).toFixed(1)),
+    doneMB: 0,
+    error: null,
+  }
+  assetJobs.set(target, job)
+  try {
+    mkdirSync(dir, { recursive: true })
+    for (const f of files) {
+      const dest = join(dir, f.name)
+      try {
+        if (existsSync(dest) && statSync(dest).size === f.size) continue
+      } catch { /* 继续下载 */ }
+      const tmp = `${dest}.part`
+      let lastErr = null
+      for (const url of f.urls) {
+        try {
+          const r = await fetchWithRetry(url, {}, { tries: 2, timeoutMs: 900000 })
+          if (!r.ok) throw new Error(`HTTP ${r.status}`)
+          if (!r.body) throw new Error('响应没有内容')
+          await pipeline(Readable.fromWeb(r.body), createWriteStream(tmp))
+          const size = statSync(tmp).size
+          if (f.size && size !== f.size) throw new Error(`大小不符 ${size}/${f.size}`)
+          renameSync(tmp, dest)
+          job.doneMB = Number((job.doneMB + size / 1048576).toFixed(1))
+          lastErr = null
+          break
+        } catch (e) {
+          lastErr = e
+          rmSync(tmp, { force: true })
+        }
+      }
+      if (lastErr) throw lastErr
+    }
+    job.status = 'done'
+  } catch (e) {
+    job.status = 'error'
+    job.error = String(e?.message || e)
+  }
+  return job
+}
+
+function removeAsset(target) {
+  const dir = assetDir(target)
+  if (target === 'asr') {
+    rmSync(dir, { recursive: true, force: true })
+    return
+  }
+  for (const f of assetFiles(target)) rmSync(join(dir, f.name), { force: true })
 }
 
 // ── 运行配置（侧栏面板可改，工具调用时作为默认值）────────────────────────────
@@ -657,6 +823,39 @@ export function apply(ctx) {
 
             if (rest === 'recent' && method === 'GET') {
               return sendJson(res, 200, { ok: true, runs: recentRuns() })
+            }
+
+            // 模型资源：面板上显示「需要下载 / 删除」
+            if (rest === 'assets' && method === 'GET') {
+              return sendJson(res, 200, {
+                ok: true,
+                assets: {
+                  ocr: { ...assetStatus('ocr'), job: assetJobs.get('ocr') || null },
+                  asr: { ...assetStatus('asr'), job: assetJobs.get('asr') || null },
+                },
+              })
+            }
+
+            if (rest === 'assets/download' && method === 'POST') {
+              const body = await readJsonBody(req)
+              const target = body?.target === 'asr' ? 'asr' : 'ocr'
+              const cur = assetJobs.get(target)
+              if (!cur || cur.status !== 'downloading') {
+                // 不 await：下载可能几分钟，让面板轮询 /assets 拿进度
+                runAssetDownload(target)
+              }
+              return sendJson(res, 200, { ok: true, started: true, target })
+            }
+
+            if (rest === 'assets/remove' && method === 'POST') {
+              const body = await readJsonBody(req)
+              const target = body?.target === 'asr' ? 'asr' : 'ocr'
+              if (assetJobs.get(target)?.status === 'downloading') {
+                return sendJson(res, 409, { ok: false, error: '正在下载，结束之后再删除' })
+              }
+              removeAsset(target)
+              assetJobs.delete(target)
+              return sendJson(res, 200, { ok: true, target })
             }
 
             return sendJson(res, 404, { ok: false, error: 'unknown-route', route: API_ROUTE })
