@@ -1,3 +1,6 @@
+// ⚠ 自动生成文件，请勿编辑。
+// 真源：lib/transnet-lib.mjs（仓库根目录）。改完真源后运行 `pnpm run sync` 重新生成。
+// 校验：`pnpm run sync:check`，副本与真源不一致时退出码为 1。
 // TransNetV2 边界检测库（供管线使用）
 import * as ort from 'onnxruntime-web'
 import { readFileSync } from 'node:fs'

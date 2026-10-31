@@ -1,3 +1,6 @@
+// ⚠ 自动生成文件，请勿编辑。
+// 真源：download-models.mjs（仓库根目录）。改完真源后运行 `pnpm run sync` 重新生成。
+// 校验：`pnpm run sync:check`，副本与真源不一致时退出码为 1。
 // 下载模型（约 47MB）：TransNetV2 + PP-OCRv4 det/rec + 字典
 // 用法：node download-models.mjs
 import { mkdirSync, createWriteStream, existsSync, statSync } from 'node:fs'

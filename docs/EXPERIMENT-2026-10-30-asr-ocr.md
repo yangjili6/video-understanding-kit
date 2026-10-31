@@ -1,6 +1,6 @@
 # 实验报告 · 2026-10-30 · OCR 与 ASR 调优
 
-> 全部数据为本机实测。素材代号见 [docx/README](README.md#测试素材)。
+> 全部数据为本机实测。素材代号见 [docs/README](README.md#测试素材)。
 > 结论已落进 [ADR-0001](ADR-0001-asr-segmentation.md)。
 
 ## 摘要

@@ -1,3 +1,6 @@
+// ⚠ 自动生成文件，请勿编辑。
+// 真源：pipeline.mjs（仓库根目录）。改完真源后运行 `pnpm run sync` 重新生成。
+// 校验：`pnpm run sync:check`，副本与真源不一致时退出码为 1。
 // 视频理解流水线 · 最小原型 v5.2
 // 规则来源：video-research/README.md + v5 设计稿（三轮 GPT 批评）+ GPT 实现审查（2026-10-18）
 //

@@ -1,3 +1,6 @@
+// ⚠ 自动生成文件，请勿编辑。
+// 真源：lib/ocr-pp.mjs（仓库根目录）。改完真源后运行 `pnpm run sync` 重新生成。
+// 校验：`pnpm run sync:check`，副本与真源不一致时退出码为 1。
 // PP-OCRv4 完整流程（Node + onnxruntime-web WASM）
 // det: DB 检测概率图 → 阈值 + 连通域 → 文本框
 // rec: 裁剪 + resize 48 高 → CTC 解码
