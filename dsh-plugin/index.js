@@ -216,6 +216,33 @@ async function ensureAsrRuntime() {
   })
 }
 
+/** 下载到文件，边收边回调字节数（大文件下载时面板进度才不会一动不动） */
+async function downloadToFile(url, dest, onProgress) {
+  const r = await fetchWithRetry(url, {}, { tries: 2, timeoutMs: 900000 })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  if (!r.body) throw new Error('响应没有内容')
+  const reader = r.body.getReader()
+  const ws = createWriteStream(dest)
+  let bytes = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      bytes += value.byteLength
+      if (onProgress) onProgress(bytes)
+      if (!ws.write(Buffer.from(value))) await new Promise((res) => ws.once('drain', res))
+    }
+    await new Promise((res, rej) => {
+      ws.once('error', rej)
+      ws.end(res)
+    })
+  } catch (e) {
+    ws.destroy()
+    throw e
+  }
+  return bytes
+}
+
 async function runAssetDownload(target) {
   const files = assetFiles(target)
   const dir = assetDir(target)
@@ -237,16 +264,15 @@ async function runAssetDownload(target) {
       } catch { /* 继续下载 */ }
       const tmp = `${dest}.part`
       let lastErr = null
+      const baseMB = job.doneMB
       for (const url of f.urls) {
         try {
-          const r = await fetchWithRetry(url, {}, { tries: 2, timeoutMs: 900000 })
-          if (!r.ok) throw new Error(`HTTP ${r.status}`)
-          if (!r.body) throw new Error('响应没有内容')
-          await pipeline(Readable.fromWeb(r.body), createWriteStream(tmp))
-          const size = statSync(tmp).size
+          const size = await downloadToFile(url, tmp, (bytes) => {
+            job.doneMB = Number((baseMB + bytes / 1048576).toFixed(1))
+          })
           if (f.size && size !== f.size) throw new Error(`大小不符 ${size}/${f.size}`)
           renameSync(tmp, dest)
-          job.doneMB = Number((job.doneMB + size / 1048576).toFixed(1))
+          job.doneMB = Number((baseMB + size / 1048576).toFixed(1))
           lastErr = null
           break
         } catch (e) {
