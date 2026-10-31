@@ -1,6 +1,6 @@
 {
   "name": "dsh-video-kit",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "DSH 视频理解插件：本地/B站视频分析、字幕时间线、镜头分组与可回查网格；视觉模型需单独下载。",
   "type": "module",
   "main": "./index.js",
@@ -12,16 +12,21 @@
   "files": [
     "index.js",
     "client.js",
-    "lib",
     "cordis.patch.yml",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "lib/videokit/pipeline.mjs",
+    "lib/videokit/asr.mjs",
+    "lib/videokit/subs.mjs",
+    "lib/videokit/download-models.mjs",
+    "lib/videokit/lib/ocr-pp.mjs",
+    "lib/videokit/lib/transnet-lib.mjs"
   ],
   "license": "MIT",
   "dsh": {
     "id": "dsh-video-kit",
     "name": "视频理解工具包",
-    "version": "0.1.5",
+    "version": "0.1.6",
     "permissions": "工具注册，侧栏面板与面板配置读写（/dsh-video-kit-api），DSH storages 数据目录读写，本机进程调用（ffmpeg / pipeline），网络访问（B站短链解析及视频下载）",
     "bundle": {
       "patch": "./cordis.patch.yml"

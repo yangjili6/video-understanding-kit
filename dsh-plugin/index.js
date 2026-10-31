@@ -14,7 +14,7 @@ import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path
 import { fileURLToPath } from 'node:url'
 
 export const name = 'dsh-video-kit'
-export const version = '0.1.5'
+export const version = '0.1.6'
 // webServer 只用来给侧栏面板提供配置读写（/dsh-video-kit-api）。
 export const inject = ['tools', 'webServer']
 
