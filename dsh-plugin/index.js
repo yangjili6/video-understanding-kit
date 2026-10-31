@@ -4,6 +4,7 @@
 //          图片由调用方按需用 read_image 打开指定网格页。
 
 import { spawn } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { randomUUID } from 'node:crypto'
 import dns from 'node:dns'
 import { copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -147,6 +148,19 @@ function asrModelDir() {
   return join(asrAppDir(), 'models', 'paraformer')
 }
 
+/**
+ * 解析 sherpa-onnx 运行时。
+ * 必须用 Node 的模块解析（会向上找 node_modules），不能用固定路径判断：
+ * 只要有一级上层目录装着它，ASR 就能跑，固定路径会误报「未安装」。
+ */
+function asrRuntimePath() {
+  try {
+    return createRequire(join(asrAppDir(), 'noop.js')).resolve('sherpa-onnx-node')
+  } catch {
+    return null
+  }
+}
+
 function assetFiles(target) {
   return target === 'asr' ? ASR_ASSETS : OCR_ASSETS
 }
@@ -179,11 +193,11 @@ function assetStatus(target) {
     presentMB: Number((presentBytes / 1048576).toFixed(1)),
   }
   if (target === 'asr') {
-    const runtime = existsSync(join(asrAppDir(), 'node_modules', 'sherpa-onnx-node'))
-      || existsSync(join(asrAppDir(), 'node_modules', 'sherpa-onnx'))
-    out.runtime = runtime
-    if (!runtime) missing.push('sherpa-onnx 运行时')
-    out.ready = out.ready && runtime
+    const runtimePath = asrRuntimePath()
+    out.runtime = Boolean(runtimePath)
+    if (runtimePath) out.runtimePath = runtimePath
+    if (!runtimePath) missing.push('sherpa-onnx 运行时')
+    out.ready = out.ready && out.runtime
   }
   return out
 }
@@ -196,10 +210,29 @@ const assetJobs = new Map()
  */
 async function ensureAsrRuntime() {
   const dir = asrAppDir()
-  if (existsSync(join(dir, 'node_modules', 'sherpa-onnx-node'))) return
+  if (asrRuntimePath()) return
   mkdirSync(dir, { recursive: true })
+  // npm 会向上找最近的 package.json，找不到就一直装到用户主目录去。
+  // 先在这里放一个最小 package.json，把安装位置钉死在 asr-app 下。
+  const pkgFile = join(dir, 'package.json')
+  if (!existsSync(pkgFile)) {
+    writeFileSync(
+      pkgFile,
+      JSON.stringify(
+        {
+          name: 'dsh-video-kit-asr-runtime',
+          private: true,
+          description: 'dsh-video-kit 的 ASR 运行时（sherpa-onnx）',
+          dependencies: { 'sherpa-onnx-node': '^2.0.1' },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    )
+  }
   await new Promise((resolve, reject) => {
-    const child = spawn('npm', ['install', '--no-audit', '--no-fund', 'sherpa-onnx-node'], {
+    const child = spawn('npm', ['install', '--no-audit', '--no-fund'], {
       cwd: dir,
       shell: true, // Windows 上 npm 是 .cmd，必须经 shell 解析
       stdio: ['ignore', 'ignore', 'pipe'],
@@ -214,6 +247,7 @@ async function ensureAsrRuntime() {
       else reject(new Error(`安装 sherpa-onnx-node 失败（退出码 ${code}）：${err.slice(-400)}`))
     })
   })
+  if (!asrRuntimePath()) throw new Error('sherpa-onnx-node 安装后仍无法解析，请检查 npm 输出')
 }
 
 /** 下载到文件，边收边回调字节数（大文件下载时面板进度才不会一动不动） */
