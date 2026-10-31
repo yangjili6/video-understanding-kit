@@ -190,6 +190,32 @@ function assetStatus(target) {
 
 const assetJobs = new Map()
 
+/**
+ * ASR 运行时：sherpa-onnx-node（约 22MB，按平台装 sherpa-onnx-win-x64 之类的二进制包）。
+ * 只下模型不装运行时，ASR 仍然开不起来，所以下载动作里连它一起装。
+ */
+async function ensureAsrRuntime() {
+  const dir = asrAppDir()
+  if (existsSync(join(dir, 'node_modules', 'sherpa-onnx-node'))) return
+  mkdirSync(dir, { recursive: true })
+  await new Promise((resolve, reject) => {
+    const child = spawn('npm', ['install', '--no-audit', '--no-fund', 'sherpa-onnx-node'], {
+      cwd: dir,
+      shell: true, // Windows 上 npm 是 .cmd，必须经 shell 解析
+      stdio: ['ignore', 'ignore', 'pipe'],
+    })
+    let err = ''
+    child.stderr.on('data', (d) => {
+      err = (err + d).slice(-3000)
+    })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      if (code === 0) resolve()
+      else reject(new Error(`安装 sherpa-onnx-node 失败（退出码 ${code}）：${err.slice(-400)}`))
+    })
+  })
+}
+
 async function runAssetDownload(target) {
   const files = assetFiles(target)
   const dir = assetDir(target)
@@ -202,6 +228,8 @@ async function runAssetDownload(target) {
   assetJobs.set(target, job)
   try {
     mkdirSync(dir, { recursive: true })
+    // ASR：先装运行时，再下模型（模型 227MB，装不上运行时就别白下了）
+    if (target === 'asr') await ensureAsrRuntime()
     for (const f of files) {
       const dest = join(dir, f.name)
       try {
