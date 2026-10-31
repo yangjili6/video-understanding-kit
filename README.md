@@ -2,7 +2,7 @@
 
 **面向 DSH 手机版的网格法视频理解工具包。** 它把视频整理成带时间戳的采样帧、镜头分组、网格图，以及可选的字幕和语音转写，方便 AI 先快速浏览，再按时间回查证据。
 
-> **DSH 手机版仓库地址**：<https://github.com/Soodok/Deepseek-Harness-Local-Android>
+> **DSH 手机版仓库地址**：<https://github.com/Soodok/Deepseek-Harness-Local-Android>(力推，这是我认为做的最好的DSH-mobile)
 >
 > 本项目依赖 DSH 手机版的工具链与目录约定。桌面、服务器和其他 Android 环境尚未验证。使用它的 AI 助手需要支持图像输入。
 >
