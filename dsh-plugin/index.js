@@ -3,7 +3,7 @@
 // 设计要点：工具返回「结构化文本摘要 + 产物路径」，不直接返回图片；
 //          图片由调用方按需用 read_image 打开指定网格页。
 
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { randomUUID } from 'node:crypto'
 import dns from 'node:dns'
@@ -16,7 +16,7 @@ import { basename, delimiter, dirname, extname, isAbsolute, join, resolve, sep }
 import { fileURLToPath } from 'node:url'
 
 export const name = 'dsh-video-kit'
-export const version = '0.1.6'
+export const version = '0.1.9'
 // webServer 只用来给侧栏面板提供配置读写（/dsh-video-kit-api）。
 export const inject = ['tools', 'webServer']
 
@@ -153,15 +153,39 @@ function asrModelDir() {
 
 /**
  * 解析 sherpa-onnx 运行时。
+ * 用 WASM 版「sherpa-onnx」（纯 JS + wasm，全平台一致），不是原生版
+ * 「sherpa-onnx-node」—— 后者靠平台二进制包（win/linux/mac），Android 上装不起来，
+ * 而且和 asr.mjs 里 require('sherpa-onnx') 对不上。
  * 必须用 Node 的模块解析（会向上找 node_modules），不能用固定路径判断：
  * 只要有一级上层目录装着它，ASR 就能跑，固定路径会误报「未安装」。
  */
 function asrRuntimePath() {
   try {
-    return createRequire(join(asrAppDir(), 'noop.js')).resolve('sherpa-onnx-node')
+    return createRequire(join(asrAppDir(), 'noop.js')).resolve('sherpa-onnx')
   } catch {
     return null
   }
+}
+
+/**
+ * 找一个能用的包管理器。
+ * 优先 npm（桌面平台通用），退回 pnpm（Android / 无 npm 的环境）。
+ * Windows 上 npm 是 .cmd，必须经 shell 解析。
+ */
+function findPackageManager() {
+  for (const cmd of ['npm', 'pnpm']) {
+    try {
+      const res = spawnSync(cmd, ['--version'], {
+        stdio: 'ignore',
+        shell: process.platform === 'win32',
+        timeout: 15000,
+      })
+      if (res.status === 0) return cmd
+    } catch {
+      // 这个不可用，试下一个
+    }
+  }
+  return null
 }
 
 function assetFiles(target) {
@@ -225,8 +249,8 @@ async function ensureAsrRuntime() {
         {
           name: 'dsh-video-kit-asr-runtime',
           private: true,
-          description: 'dsh-video-kit 的 ASR 运行时（sherpa-onnx）',
-          dependencies: { 'sherpa-onnx-node': '^2.0.1' },
+          description: 'dsh-video-kit 的 ASR 运行时（sherpa-onnx WASM）',
+          dependencies: { 'sherpa-onnx': '^2.0.1' },
         },
         null,
         2,
@@ -234,10 +258,15 @@ async function ensureAsrRuntime() {
       'utf8',
     )
   }
+  const pm = findPackageManager()
+  if (!pm) {
+    throw new Error('找不到可用的包管理器（npm / pnpm），无法自动安装 ASR 运行时；可在 asr-app 目录手动安装 sherpa-onnx 后重试');
+  }
+  const installArgs = pm === 'pnpm' ? ['install'] : ['install', '--no-audit', '--no-fund']
   await new Promise((resolve, reject) => {
-    const child = spawn('npm', ['install', '--no-audit', '--no-fund'], {
+    const child = spawn(pm, installArgs, {
       cwd: dir,
-      shell: true, // Windows 上 npm 是 .cmd，必须经 shell 解析
+      shell: process.platform === 'win32', // Windows 上 npm/pnpm 是 .cmd，必须经 shell 解析
       stdio: ['ignore', 'ignore', 'pipe'],
     })
     let err = ''
@@ -250,7 +279,7 @@ async function ensureAsrRuntime() {
       else reject(new Error(`安装 sherpa-onnx-node 失败（退出码 ${code}）：${err.slice(-400)}`))
     })
   })
-  if (!asrRuntimePath()) throw new Error('sherpa-onnx-node 安装后仍无法解析，请检查 npm 输出')
+  if (!asrRuntimePath()) throw new Error(`${pm} 安装 sherpa-onnx 后仍无法解析，请检查输出`)
 }
 
 /**
