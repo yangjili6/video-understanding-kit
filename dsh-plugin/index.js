@@ -16,7 +16,7 @@ import { basename, delimiter, dirname, extname, isAbsolute, join, resolve, sep }
 import { fileURLToPath } from 'node:url'
 
 export const name = 'dsh-video-kit'
-export const version = '0.1.9'
+export const version = '0.1.10'
 // webServer 只用来给侧栏面板提供配置读写（/dsh-video-kit-api）。
 export const inject = ['tools', 'webServer']
 
@@ -815,7 +815,57 @@ function runPipeline(videoPath, outDir, opts = {}) {
   })
 }
 
+/**
+ * 启动时的垃圾回收。
+ *
+ * 正常情况下 downloadVideo 的调用方在 finally 里 rm -rf 临时目录，但进程被强杀
+ * （OOM、用户手动停止、引擎重启）时 finally 跑不到，video.mp4 会一直留在
+ * downloads/ 里 —— 那是应用私有目录，但白占空间。out/ 同理：每次分析都落一套
+ * 帧图，久了能到几百 MB。
+ *
+ * 这里只清「超期」的：下载目录 2 小时，输出目录 7 天。最近还在用的不动。
+ */
+function gcStaleArtifacts() {
+  const report = { downloads: 0, out: 0 }
+  const now = Date.now()
+  const sweep = (dir, maxAgeMs) => {
+    if (!existsSync(dir)) return 0
+    let removed = 0
+    try {
+      for (const name of readdirSync(dir)) {
+        const p = join(dir, name)
+        try {
+          const st = statSync(p)
+          if (st.isDirectory() && now - st.mtimeMs > maxAgeMs) {
+            rmSync(p, { recursive: true, force: true })
+            removed += 1
+          }
+        } catch {
+          // 单个条目出错（权限、竞态）跳过，不影响其它
+        }
+      }
+    } catch {
+      // 目录读不了就放弃
+    }
+    return removed
+  }
+  report.downloads = sweep(join(storageRoot(), 'downloads'), 2 * 60 * 60 * 1000)
+  report.out = sweep(join(storageRoot(), 'out'), 7 * 24 * 60 * 60 * 1000)
+  return report
+}
+
 export function apply(ctx) {
+  // 启动时清一次：进程被强杀时 finally 跑不到，临时视频与旧帧图会积在磁盘上
+  try {
+    const gc = gcStaleArtifacts()
+    if (gc.downloads || gc.out) {
+      ctx.logger?.info?.(
+        `[video-kit] 启动清理：残留下载 ${gc.downloads} 个、超期输出 ${gc.out} 个`,
+      )
+    }
+  } catch {
+    // GC 失败不能影响插件启动
+  }
   const tools = []
 
   // ── video_analyze ─────────────────────────────────────────────────────────
