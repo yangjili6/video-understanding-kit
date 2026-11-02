@@ -8,6 +8,7 @@
 | 文档 | 内容 |
 |---|---|
 | [ADR-0001 分段与过滤](ADR-0001-asr-segmentation.md) | ASR 怎么切段、为什么默认阈值不动、为什么拒绝降噪 |
+| [ADR-0002 B 站下载耗时](ADR-0002-bilibili-download.md) | 视频下载分片并发、autoSelectFamily 为什么在进程内失效、还剩哪些没做 |
 | [实验 2026-10-30](EXPERIMENT-2026-10-30-asr-ocr.md) | OCR 坐标 bug、OCR 预探测、ASR 分段/阈值/降噪的七组对照 |
 
 ## 测试素材
