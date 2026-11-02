@@ -3,6 +3,29 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 版本号以 `dsh-plugin/package.json` 的 `version` 为准，根 `package.json` 与之同号。
 
+## [未发布]
+
+### 性能
+- **B 站视频下载改分片并发**：实测同一 6.28 MB 视频，单连接 32.2 秒（0.20 MB/s），
+  4 片并发 5.7 秒（1.1 MB/s），提速约 5.6 倍。B 站 CDN 支持 Range
+  （`Accept-Ranges: bytes` / 206），直接复用模型下载的 `downloadToFile`；
+  服务器不支持 Range 时自动回退单连接。
+  按此推算，31 秒视频的 B 站直连分析从 85 秒降到约 30 秒。
+
+## [0.2.0] - 2026-11-01
+
+### 新增
+- 启动时回收残留临时文件（`downloads` 超过 2 小时、`out` 超过 7 天），
+  应对进程被强杀时 `finally` 跑不到的情况。
+
+## [0.1.9] - 2026-11-01
+
+### 修复
+- ASR 运行时改用 WASM 版 `sherpa-onnx`（纯 JS + wasm，全平台一致），
+  不再依赖原生二进制包 `sherpa-onnx-node`（后者在 Android 上装不起来，且与 `asr.mjs` 的
+  `require('sherpa-onnx')` 对不上）。
+- 包管理器自动降级：优先 `npm`，不可用时退回 `pnpm`。
+
 ## [0.1.8] - 2026-11-01
 
 ### 新增

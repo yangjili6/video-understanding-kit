@@ -290,8 +290,8 @@ async function ensureAsrRuntime() {
 const MIN_CHUNK_BYTES = 6 * 1048576
 const CHUNK_COUNT = 4
 
-async function downloadRange(url, dest, start, end, onBytes) {
-  const r = await fetchWithRetry(url, { headers: { Range: `bytes=${start}-${end}` } }, { tries: 2, timeoutMs: 900000 })
+async function downloadRange(url, dest, start, end, onBytes, extraHeaders = {}) {
+  const r = await fetchWithRetry(url, { headers: { ...extraHeaders, Range: `bytes=${start}-${end}` } }, { tries: 2, timeoutMs: 900000 })
   if (r.status !== 206) throw new Error(`服务器未按 Range 返回（HTTP ${r.status}）`)
   if (!r.body) throw new Error('响应没有内容')
   const reader = r.body.getReader()
@@ -316,8 +316,8 @@ async function downloadRange(url, dest, start, end, onBytes) {
   return n
 }
 
-async function downloadSingle(url, dest, onProgress) {
-  const r = await fetchWithRetry(url, {}, { tries: 2, timeoutMs: 900000 })
+async function downloadSingle(url, dest, onProgress, extraHeaders = {}) {
+  const r = await fetchWithRetry(url, { headers: extraHeaders }, { tries: 2, timeoutMs: 900000 })
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
   if (!r.body) throw new Error('响应没有内容')
   const reader = r.body.getReader()
@@ -343,7 +343,7 @@ async function downloadSingle(url, dest, onProgress) {
 }
 
 /** 大文件分片并行；任何一步不支持 Range 就退回单连接 */
-async function downloadToFile(url, dest, onProgress, expectedSize) {
+async function downloadToFile(url, dest, onProgress, expectedSize, extraHeaders = {}) {
   const parts = []
   if (expectedSize && expectedSize >= MIN_CHUNK_BYTES) {
     const per = Math.ceil(expectedSize / CHUNK_COUNT)
@@ -359,10 +359,17 @@ async function downloadToFile(url, dest, onProgress, expectedSize) {
     try {
       await Promise.all(
         parts.map((p) =>
-          downloadRange(url, p.file, p.start, p.end, (n) => {
-            received += n
-            if (onProgress) onProgress(received)
-          }),
+          downloadRange(
+            url,
+            p.file,
+            p.start,
+            p.end,
+            (n) => {
+              received += n
+              if (onProgress) onProgress(received)
+            },
+            extraHeaders,
+          ),
         ),
       )
       const ws = createWriteStream(dest)
@@ -376,7 +383,7 @@ async function downloadToFile(url, dest, onProgress, expectedSize) {
       // 落到下面走单连接
     }
   }
-  return downloadSingle(url, dest, onProgress)
+  return downloadSingle(url, dest, onProgress, extraHeaders)
 }
 
 async function runAssetDownload(target) {
@@ -748,9 +755,11 @@ async function resolveVideo(input) {
   if (play.code !== 0) throw new Error(`playurl 失败 ${play.code}: ${play.message}`)
   const durl = play.data?.durl?.[0]?.url
   if (!durl) throw new Error('没有拿到 durl 直链')
+  const size = Number(play.data?.durl?.[0]?.size) || 0
 
   return {
-    download: { url: durl, referer: 'https://www.bilibili.com/', cookie },
+    // size 用于判断要不要分片下载（B 站 CDN 支持 Range）
+    download: { url: durl, size, referer: 'https://www.bilibili.com/', cookie },
     meta: { title, duration, owner: owner?.name, bvid: bv?.[1] || null },
   }
 }
@@ -759,22 +768,20 @@ async function resolveVideo(input) {
 async function downloadVideo(dl, destDir) {
   await mkdir(destDir, { recursive: true })
   const dest = join(destDir, 'video.mp4')
-  const r = await fetchWithRetry(dl.url, {
-    headers: {
-      Referer: dl.referer,
-      'User-Agent': BROWSER_UA,
-      ...(dl.cookie ? { Cookie: dl.cookie } : {}),
-    },
-  }, { timeoutMs: 600000 })
-  if (!r.ok) throw new Error(`下载失败 HTTP ${r.status}`)
-  if (!r.body) throw new Error('下载响应没有内容')
+  const headers = {
+    Referer: dl.referer,
+    'User-Agent': BROWSER_UA,
+    ...(dl.cookie ? { Cookie: dl.cookie } : {}),
+  }
+  // B 站 CDN 支持 Range（实测 Accept-Ranges: bytes / 206），
+  // 单连接只有 ~200KB/s，走分片并发能和模型下载一样提速。
   try {
-    await pipeline(Readable.fromWeb(r.body), createWriteStream(dest, { flags: 'wx' }))
+    const bytes = await downloadToFile(dl.url, dest, null, dl.size || 0, headers)
+    return { path: dest, bytes: bytes || dl.size || null }
   } catch (e) {
     await rm(dest, { force: true }).catch(() => {})
     throw e
   }
-  return { path: dest, bytes: Number(r.headers.get('content-length')) || null }
 }
 
 /** 跑 pipeline，返回 stdout 摘要 */
