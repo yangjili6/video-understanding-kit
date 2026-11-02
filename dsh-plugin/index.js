@@ -4,6 +4,7 @@
 //          图片由调用方按需用 read_image 打开指定网格页。
 
 import { spawn, spawnSync } from 'node:child_process'
+import net from 'node:net'
 import { createRequire } from 'node:module'
 import { randomUUID } from 'node:crypto'
 import dns from 'node:dns'
@@ -589,10 +590,17 @@ function recentRuns(limit = 6) {
 // ── 网络与外部工具适配 ────────────────────────────────────────────────────────
 
 // 部分网络环境里 IPv6 路由不通，Node 的 fetch 会先尝试 IPv6 然后超时
-// （实测：curl 正常、fetch 报 UND_ERR_CONNECT_TIMEOUT）。强制 IPv4 优先。
+// （实测：curl 正常、fetch 报 UND_ERR_CONNECT_TIMEOUT）。
+// 两件事都要做：
+//   1. DNS 结果 IPv4 优先
+//   2. 关掉 undici 的 happy-eyeballs（autoSelectFamily）—— 否则它仍会同时试 IPv6，
+//      不通时一路拖到 connect timeout。实测 www.bilibili.com 首页 37.8s → 3.7s。
 try {
   dns.setDefaultResultOrder('ipv4first')
 } catch { /* 老版本 Node 不支持，忽略 */ }
+try {
+  if (typeof net.setDefaultAutoSelectFamily === 'function') net.setDefaultAutoSelectFamily(false)
+} catch { /* 同上 */ }
 
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 
