@@ -17,7 +17,7 @@ import { basename, delimiter, dirname, extname, isAbsolute, join, resolve, sep }
 import { fileURLToPath } from 'node:url'
 
 export const name = 'dsh-video-kit'
-export const version = '0.2.0'
+export const version = '0.2.1'
 // webServer 只用来给侧栏面板提供配置读写（/dsh-video-kit-api）。
 export const inject = ['tools', 'webServer']
 
@@ -962,6 +962,12 @@ export function apply(ctx) {
         ).map((c) => ({ s: Number(c.s), e: Number(c.e), text: String(c.text) }))
 
         const gridsDir = join(outDir, 'grids')
+        // 画面证据：把网格图列成数组交出去，而不是只给一个目录。
+        // 只给目录时，调用方很容易只读 asr 台词就"脑补"画面——工具默认交付的
+        // 应该是最需要看的那几页，而不是一个需要再展开的路径。
+        const gridFiles = existsSync(gridsDir)
+          ? readdirSync(gridsDir).filter((f) => f.endsWith('.jpg')).sort().map((f) => join(gridsDir, f))
+          : []
 
         return {
           ok: true,
@@ -981,15 +987,18 @@ export function apply(ctx) {
           asr: asrCues,
           outDir,
           gridsDir,
+          // 前 12 页覆盖整条时间线；要看某一段的细节再按 gridsDir 取其余页
+          grids: gridFiles.slice(0, 12),
+          gridsCount: gridFiles.length,
           indexJson: indexPath,
           elapsedMs: Date.now() - t0,
           nextStep: subs.length > 0
-            ? '硬字幕已给出（含时间戳）。需要画面证据时用 video_frame 传 video=<原始本地路径或同一B站链接> 和 t=<秒> 取原帧；也可 read_image 打开 gridsDir 下的组拼图。'
+            ? '⚠️ 描述画面内容前，必须先用 read_image 打开 grids[] 里的图（至少第 1 张 + 关键转折页）。subs/asr 只是台词，不能代替画面。硬字幕已给出（含时间戳），需要更细的帧再用 video_frame。'
             : asrCues.length > 0
-              ? '没有硬字幕，但有 ASR 台词（见 asr 字段）。需要画面证据时用 video_frame 取原帧，或 read_image 打开网格页核对。'
+              ? '⚠️ 描述画面内容前，必须先用 read_image 打开 grids[] 里的图（至少第 1 张 + 关键转折页）。asr 只是台词，不能代替画面——只凭台词说画面会导致误判。'
               : asrOn
-                ? '没有字幕，也没有识别出台词（可能纯音乐/环境音）。改用 groupsDetail 定位；用 video_frame 取原帧，或 read_image 打开对应网格页核对。'
-                : '没有硬字幕，且本次未开启 ASR——如果视频有配音，重跑时传 asr:true（或在侧栏「视频理解」面板里把语音识别打开）。改用 groupsDetail 定位。',
+                ? '⚠️ 没有字幕也没有台词（可能纯音乐/环境音）。描述画面内容前，必须先用 read_image 打开 grids[] 里的图；需要更细的帧再用 video_frame。'
+                : '⚠️ 本次未开启 ASR，也没有硬字幕。描述画面内容前，必须先用 read_image 打开 grids[] 里的图；有配音的话可重跑并传 asr:true。',
         }
       } catch (e) {
         return { ok: false, error: String(e?.message || e) }
