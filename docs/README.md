@@ -11,6 +11,7 @@
 | [ADR-0002 B 站下载耗时](ADR-0002-bilibili-download.md) | 视频下载分片并发、autoSelectFamily 为什么在进程内失效、还剩哪些没做 |
 | [ADR-0003 运动强度抽帧](ADR-0003-motion-based-frame-sampling.md) | 光流 vs 帧差：为什么先选帧差、光流留作后续、收益上限在哪 |
 | [ADR-0004 动作采样](ADR-0004-action-sampling.md) | 网格够不够用、补抽为什么有效但定位错、镜头运动怎么排除 |
+| [ADR-0005 TransNet 采样](ADR-0005-transnet-sampling.md) | 便宜特征为什么替代不了切点检测（六信号全灭）、STRIDE 减半的零损失提速 |
 | [实验 2026-10-30](EXPERIMENT-2026-10-30-asr-ocr.md) | OCR 坐标 bug、OCR 预探测、ASR 分段/阈值/降噪的七组对照 |
 | [实验 2026-11-03](EXPERIMENT-2026-11-03-frame-detail.md) | 三组对照：网格够用 / 关键帧没采到 / 补抽有效但峰值错 |
 

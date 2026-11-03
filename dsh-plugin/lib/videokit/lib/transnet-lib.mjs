@@ -15,7 +15,12 @@ ort.env.wasm.wasmPaths = pathToFileURL(dirname(req.resolve('onnxruntime-web')) +
 ort.env.wasm.numThreads = 1
 const run = (c, a, o = {}) => execFileSync(c, a, { encoding: 'utf8', maxBuffer: 512 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], ...o })
 const APP = dirname(fileURLToPath(import.meta.url))
-const W = 48, H = 27, WIN = 100, STRIDE = 50
+const W = 48, H = 27, WIN = 100
+// 步长取窗口宽度：窗口不重叠，每帧仍被覆盖一次，推理次数减半。
+// 实测（2026-11-03，三视频合计 79s）：切点结果与 STRIDE=50 完全一致
+// （CONCAT 5.8/11.8/17.8、anti-late 18.2、羽毛球 0 个），耗时 97.9s → 49.9s。
+// 详见 docs/ADR-0005-transnet-sampling.md
+const STRIDE = 100
 
 let session = null
 async function getSession() {
