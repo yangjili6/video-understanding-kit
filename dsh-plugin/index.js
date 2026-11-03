@@ -991,6 +991,8 @@ export function apply(ctx) {
           grids: gridFiles.slice(0, 12),
           gridsCount: gridFiles.length,
           indexJson: indexPath,
+          // 分段耗时（秒）：TransNet / ASR / 补帧 / 分页各占多少，用于定位下一次该压哪里
+          timings: idx.timings || null,
           elapsedMs: Date.now() - t0,
           nextStep: subs.length > 0
             ? '⚠️ 描述画面内容前，必须先用 read_image 打开 grids[] 里的图（至少第 1 张 + 关键转折页）。subs/asr 只是台词，不能代替画面。硬字幕已给出（含时间戳），需要更细的帧再用 video_frame。'

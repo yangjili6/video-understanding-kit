@@ -12,6 +12,7 @@
 // 原型边界：ASR/OCR 只生成候选，视觉事件语义由调用方核验；本程序不自动给出视频内容结论。
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync, lstatSync } from 'node:fs'
+import { cpus } from 'node:os'
 import { join } from 'node:path'
 import { transcribeVideo } from './asr.mjs'
 import { detectCuts } from './lib/transnet-lib.mjs'
@@ -215,15 +216,31 @@ function extractFrameAt(t, fps, source) {
 
 // 合并桥：候选窗口内找画面变化段 → 从触发帧对锚点补帧（偏召回）；
 // 无画面候选 → 独立回看（固定采样），不再绑回视觉检测（GPT 审查第 1 条）
-function searchCandidates(cues, segs, fps) {
+// 补帧提取是「每帧一次 ffmpeg spawn」，串行时 20 个点要十几秒。
+// 改成两阶段：先在同步阶段把预算/采样点全部算清，再并发提取（AGENTS：改完需 pnpm run sync）。
+function extractFrameAtAsync(t, fps, source) {
+  const dir = join(OUT, 'extra')
+  mkdirSync(dir, { recursive: true })
+  const id = `extra-${String(++extraCount).padStart(4, '0')}`
+  const file = join(dir, `${id}.jpg`)
+  return runAsync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', String(Math.max(0, t)), '-i', VIDEO, '-frames:v', '1', '-q:v', '2', file])
+    .then(() => ({ requestTime: t, t, sourceFrameId: srcId(t, fps), extractionId: id, source, file }))
+}
+
+async function searchCandidates(cues, segs, fps) {
   let budgetUsed = 0
-  for (const c of cues) {
+  const plan = []      // { t, source, cueIdx }
+  const decisions = [] // 每条 cue 的回填信息
+
+  for (let ci = 0; ci < cues.length; ci++) {
+    const c = cues[ci]
     const [wFrom, wTo] = c.window
     const inWin = segs.filter((s) => s.to >= wFrom && s.from <= wTo)
     c.matchedChanges = inWin.map((s) => ({ from: s.from, to: s.to, peak: Number(s.peak) }))
 
     if (budgetUsed >= MAX_EXTRA_TOTAL) {
       c.extraction = 'deferred'; c.reason = 'budget_exhausted'; c.note = '补帧总预算已用尽，未展开'
+      decisions[ci] = null
       continue
     }
 
@@ -234,14 +251,13 @@ function searchCandidates(cues, segs, fps) {
       for (let i = 0; i < n; i++) {
         pts.push(Number((wFrom + ((wTo - wFrom) * i) / Math.max(1, n - 1)).toFixed(2)))
       }
-      const frames = []
-      for (const t of pts) { frames.push(extractFrameAt(t, fps, 'fallback')); budgetUsed++ }
-      c.extraFrames = frames
-      c.extraction = frames.length ? 'expanded' : 'deferred'
-      c.reason = 'no_visual_candidate'
-      c.note = frames.length
-        ? '窗内无画面变化候选，按固定间隔回看；不代表操作未发生'
-        : '窗内无画面变化候选且无预算回看，未展开'
+      const start = plan.length
+      for (const t of pts) {
+        if (budgetUsed >= MAX_EXTRA_TOTAL) break
+        plan.push({ t, source: 'fallback', cueIdx: ci })
+        budgetUsed++
+      }
+      decisions[ci] = { start, count: plan.length - start, kind: 'fallback' }
       continue
     }
 
@@ -259,19 +275,44 @@ function searchCandidates(cues, segs, fps) {
     const idxs = take >= list.length
       ? list.map((_, i) => i)
       : Array.from({ length: take }, (_, i) => Math.round((i * (list.length - 1)) / Math.max(1, take - 1)))
-    const frames = []
+    const start = plan.length
     for (const i of idxs) {
       if (budgetUsed >= MAX_EXTRA_TOTAL) break
-      frames.push(extractFrameAt(list[i], fps, 'extra'))
+      plan.push({ t: list[i], source: 'extra', cueIdx: ci })
       budgetUsed++
     }
-    c.extraFrames = frames
-    if (frames.length === 0) { c.extraction = 'deferred'; c.reason = 'budget_exhausted'; c.note = '预算不足，未取帧' }
-    else if (frames.length < list.length) { c.extraction = 'partial'; c.reason = 'budget_exhausted'; c.note = `锚点 ${list.length} 个，只展开 ${frames.length} 个` }
-    else { c.extraction = 'expanded' }
+    decisions[ci] = { start, count: plan.length - start, kind: 'extra', listLength: list.length }
+  }
+
+  // 并发提取（每帧独立，用同一并发池）
+  const frames = new Array(plan.length)
+  await runPool(plan.map((item, i) => async () => {
+    frames[i] = await extractFrameAtAsync(item.t, fps, item.source)
+  }))
+
+  // 回填提取状态（文案与串行版一致）
+  for (let ci = 0; ci < cues.length; ci++) {
+    const d = decisions[ci]
+    if (!d) continue
+    const c = cues[ci]
+    c.extraFrames = frames.slice(d.start, d.start + d.count)
+    if (d.kind === 'fallback') {
+      c.extraction = c.extraFrames.length ? 'expanded' : 'deferred'
+      c.reason = 'no_visual_candidate'
+      c.note = c.extraFrames.length
+        ? '窗内无画面变化候选，按固定间隔回看；不代表操作未发生'
+        : '窗内无画面变化候选且无预算回看，未展开'
+    } else if (c.extraFrames.length === 0) {
+      c.extraction = 'deferred'; c.reason = 'budget_exhausted'; c.note = '预算不足，未取帧'
+    } else if (c.extraFrames.length < d.listLength) {
+      c.extraction = 'partial'; c.reason = 'budget_exhausted'; c.note = `锚点 ${d.listLength} 个，只展开 ${c.extraFrames.length} 个`
+    } else {
+      c.extraction = 'expanded'
+    }
   }
   return budgetUsed
 }
+
 
 // ---------------------------------------------------------------- 呈现集合（只增不减）
 
@@ -412,9 +453,33 @@ function buildGroups(displaySet, segs, histDiffs, hists, duration, cutTimes) {
 
 // ---------------------------------------------------------------- 分页 + 网格图
 
-function buildPages(groups, vertical) {
+// 并发执行外部命令：montage 拼图是纯 CPU 子进程，串行跑一页一等，页多时（20+ 页）
+// 光拼图就要十几秒。改成并发池后压到 1/4~1/5（AGENTS：真源改动需 pnpm run sync）。
+const MONTAGE_CONCURRENCY = Math.max(2, Math.min(6, cpus().length - 1))
+function runAsync(cmd, argv) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, argv, { stdio: ['ignore', 'ignore', 'pipe'] })
+    let err = ''
+    child.stderr.on('data', (d) => { err = (err + d.toString()).slice(-2000) })
+    child.on('error', reject)
+    child.once('close', (code) => code === 0 ? resolve() : reject(new Error(`${cmd} 退出码 ${code}: ${err.trim().slice(-300)}`)))
+  })
+}
+async function runPool(jobs, limit = MONTAGE_CONCURRENCY) {
+  let next = 0
+  const fan = Math.min(limit, jobs.length)
+  const workers = Array.from({ length: fan }, async () => {
+    while (next < jobs.length) {
+      const i = next++
+      await jobs[i]()
+    }
+  })
+  await Promise.all(workers)
+}
+
+async function buildPages(groups, vertical) {
   const pages = []
-  const zoomW = Math.round(426 * PAGE_SCALE)
+  const jobs = []
   for (const g of groups) {
     const chunks = []
     for (let i = 0; i < g.frames.length; i += PAGE_FRAMES) chunks.push(g.frames.slice(i, i + PAGE_FRAMES))
@@ -428,7 +493,7 @@ function buildPages(groups, vertical) {
       const argv = ['-quality', '90', '-background', '#0f172a', '-geometry', geometry, '-tile', '3x2']
       for (const f of frames) argv.push(f.file)
       argv.push(file)
-      run('montage', argv)
+      jobs.push(() => runAsync('montage', argv))
       const cells = frames.map((f, i) => ({
         cell: [i % 3, Math.floor(i / 3)],
         t: f.t,
@@ -442,6 +507,7 @@ function buildPages(groups, vertical) {
     })
     pages.push(...g.pages)
   }
+  await runPool(jobs)
   return pages
 }
 
@@ -487,7 +553,8 @@ function buildCoverage(duration, cues) {
 async function main() {
   const tAll = Date.now()
   let tPrev = tAll
-  const lap = (name) => { const now = Date.now(); console.log(`[timing] ${name}: ${((now - tPrev) / 1000).toFixed(1)}s（累计 ${((now - tAll) / 1000).toFixed(1)}s）`); tPrev = now }
+  const timings = {}
+  const lap = (name) => { const now = Date.now(); timings[name] = Number(((now - tPrev) / 1000).toFixed(2)); console.log(`[timing] ${name}: ${((now - tPrev) / 1000).toFixed(1)}s（累计 ${((now - tAll) / 1000).toFixed(1)}s）`); tPrev = now }
   if (existsSync(OUT)) {
     const st = lstatSync(OUT)
     if (st.isSymbolicLink() || !st.isDirectory()) throw new Error('输出路径必须是普通目录，不能是文件或符号链接')
@@ -532,16 +599,17 @@ async function main() {
   console.log(`[4/6] 候选 ${cues.length} 条（${ASR ? 'ASR 转写' : CUES_FILE ? '来自 ' + CUES_FILE : '仅视觉模式'}）`)
 
   lap('ASR/候选')
-  const extraUsed = searchCandidates(cues, segs, fps)
+  const extraUsed = await searchCandidates(cues, segs, fps)
   console.log(`[5/6] 补帧/回退 ${extraUsed} 张`)
   for (const c of cues) console.log(`     ${c.id} [${c.extraction}] ${c.s.toFixed(2)}~${c.e.toFixed(2)}s${c.reason ? ' · ' + c.reason : ''}${c.note ? ' · ' + c.note : ''}`)
 
   lap('补帧')
   const displaySet = buildDisplaySet(baseFrames, cues)
   const { groups, boundaries } = buildGroups(displaySet, segs, histDiffs, hists, duration, cutTimes)
-  const pages = buildPages(groups, height > width)
+  const pages = await buildPages(groups, height > width)
   // 组级拼图（导航用）：按可读性分页，每张 ≤12 页（3×4）
   const SHEET_CHUNK = 12
+  const sheetJobs = []
   for (const g of groups) {
     if (g.pages.length <= 1) continue
     g.sheets = []
@@ -549,10 +617,11 @@ async function main() {
       const chunk = g.pages.slice(i, i + SHEET_CHUNK)
       const n = Math.floor(i / SHEET_CHUNK) + 1
       const sheet = join(OUT, 'grids', `${g.id}-sheet-${n}.jpg`)
-      run('montage', ['-quality', '85', '-background', '#0f172a', '-geometry', '600x+4+4', '-tile', '3x', ...chunk.map((p) => p.file), sheet])
+      sheetJobs.push(() => runAsync('montage', ['-quality', '85', '-background', '#0f172a', '-geometry', '600x+4+4', '-tile', '3x', ...chunk.map((p) => p.file), sheet]))
       g.sheets.push(sheet)
     }
   }
+  await runPool(sheetJobs)
   console.log(`[6/6] 组 ${groups.length} 个，页 ${pages.length} 张`)
   lap('分组+分页')
 
@@ -578,6 +647,7 @@ async function main() {
 
   const index = {
     version: '5.2-proto',
+    timings,
     video: VIDEO,
     duration: Number(duration.toFixed(3)),
     sourceFps: fps,
@@ -618,6 +688,7 @@ async function main() {
     coverage: buildCoverage(duration, cues),
     checks: { ok: problems.length === 0, problems },
   }
+  timings.total = Number(((Date.now() - tAll) / 1000).toFixed(2))
   writeFileSync(join(OUT, 'index.json'), JSON.stringify(index, null, 2))
   const totalFrames = pages.reduce((s, p) => s + p.frames.length, 0)
   console.log(`\n帧总数 ${totalFrames}（页内），去重后 ${displaySet.length}；输出 ${join(OUT, 'index.json')}`)
