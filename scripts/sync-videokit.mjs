@@ -28,6 +28,7 @@ const FILES = [
   'download-models.mjs',
   'lib/ocr-pp.mjs',
   'lib/transnet-lib.mjs',
+  'lib/transnet-worker.mjs',
 ]
 
 const BANNER = [
