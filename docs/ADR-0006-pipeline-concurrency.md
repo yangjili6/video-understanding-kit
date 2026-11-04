@@ -1,6 +1,6 @@
 # ADR-0006：管线流程并发化
 
-- **状态**：Partially Accepted（进程池并发已采纳；worker_threads 真并行评估后暂不采纳）
+- **状态**：Accepted（进程池并发 + TransNet worker 并行均已落地；worker 的 CPU 争抢代价已量化）
 - **影响文件**：`pipeline.mjs`（`buildPages` / `searchCandidates` / `runPool`）、`dsh-plugin/index.js`（返回 timings）
 - **相关**：ADR-0005（TransNet 采样）、ADR-0004（动作采样）
 
@@ -58,7 +58,53 @@ async function runPool(jobs, limit) { ...N 个 worker 轮询取任务... }
 
 `pipeline` 收集每阶段耗时写入 `index.json` 的 `timings`，`video_analyze` 原样返回。以前判断瓶颈要靠 bench 脚本猜，现在每次调用都自带。
 
-## 未采纳：worker_threads 真并行
+## 后续实测：worker_threads 真并行（2026-11-05 补充，已采纳）
+
+上文「暂不采纳」的判断被后续实测推翻了——**并行是赚的，只是赚得不多**。
+
+### 做法
+
+把 TransNet 挪到 worker 线程（`lib/transnet-worker.mjs`），主线程同时跑 ASR 与 OCR：
+
+```
+主线程：抽帧 → 帧差 → [启动 worker] → ASR → OCR → [取 worker 结果] → 补帧 → 分页
+worker：                TransNet（解码 + ONNX 推理）
+```
+
+worker 起不来时自动退回主线程同步跑（`--serial` 也可强制串行，用于对照）。
+
+### 三组交替对照（15 秒片，ASR 开、字幕关，交替 3 轮）
+
+| 轮次 | 模式 | ASR | TransNet 墙钟 | 总耗时 |
+|---|---|---|---|---|
+| 1 | 串行 | 4.4s | 6.3s | 22.42s |
+| 1 | **并行** | 6.4s | 0.7s | **18.35s** |
+| 2 | 串行 | 4.9s | 7.8s | 25.31s |
+| 2 | **并行** | 7.3s | 1.6s | **21.03s** |
+| 3 | 串行 | 4.9s | 8.1s | 25.48s |
+| 3 | **并行** | 6.6s | 2.3s | **21.06s** |
+
+均值：**串行 24.4s → 并行 20.1s（1.21x）**，三轮全胜。
+
+### 代价与收益拆解
+
+- **TransNet 墙钟**：7.4s → 1.5s（省 5.9s，被 ASR 期间藏掉了）
+- **ASR 自己变慢**：4.7s → 6.8s（**+2.1s**，两个 WASM 抢 CPU）
+- **净收益 ≈ 3.8s**（与实测的 4.3s 吻合）
+
+**并行不是免费的**：sherpa 与 onnxruntime 同时跑会互相拖慢。收益 = 被藏起来的时长 − 争抢损失。因为 TransNet（7.4s）明显长于 ASR（4.7s），所以藏得下、还有赚。
+
+### 为什么之前那次测出「并行更慢」
+
+早先有一轮并行总耗时 36.2s、ASR 14.3s，看着像亏。事后核对：那一轮抽基础帧从 0.9s 涨到 1.5s，**整机在热/有后台负载**。交替三轮的干净数据里没有复现。**单次样本不足以下结论，必须交替对照。**
+
+### 边界
+
+- 内存：整机 app RSS 417MB（含 worker 的 ORT 实例），没 OOM，但余量不大——**不要再往 worker 里塞第二个模型**（比如把 OCR 也搬进去）。
+- 只验证了「TransNet vs ASR」这一对。**OCR（主线程，最长 19s）仍没有并行伙伴**，它才是字幕密集片的瓶颈。
+- 结论依赖「TransNet 比 ASR 长」这个前提。如果换个更快的镜头检测模型，争论代价可能反超收益。
+
+## 原判断（保留作对照）：worker_threads 真并行
 
 `Promise.all` 包住 TransNet / ASR / OCR **没有用**——三个模型都在 Node 主线程里同步执行（ORT WASM、sherpa WASM、PP-OCR 全同步），包起来只是排队。
 

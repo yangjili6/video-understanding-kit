@@ -11,6 +11,7 @@
 - **实验 2026-11-03**：三组对照，含素材、命令、边界。
 
 ### 性能
+- **TransNet 移到 worker 线程并行**：主线程跑 ASR/OCR 的同时做镜头检测，三轮交替对照 24.4s→20.1s（1.21x）；代价是 ASR 被两个 WASM 的 CPU 争抢拖慢 2.1s。`--serial` 可强制串行。见 [ADR-0006](docs/ADR-0006-pipeline-concurrency.md)。
 - **流程并发化**：拼图（逐页 montage）与补帧（逐帧 ffmpeg）改成进程池，分页 21.6s→5.0s、60 张补帧 9.9s；15s 片总耗时 42.3s→33.8s。见 [ADR-0006](docs/ADR-0006-pipeline-concurrency.md)。
 - **TransNet 窗口步长 50 → 100**（窗口不重叠）：三视频合计 97.9s → 49.9s，切点结果完全一致（CONCAT 5.8/11.8/17.8、anti-late 18.2、羽毛球 0）。见 [ADR-0005](docs/ADR-0005-transnet-sampling.md)。
 - **B 站视频下载改分片并发**：实测同一 6.28 MB 视频，单连接 32.2 秒（0.20 MB/s），

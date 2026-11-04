@@ -13,6 +13,7 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync, lstatSync } from 'node:fs'
 import { cpus } from 'node:os'
+import { Worker } from 'node:worker_threads'
 import { join } from 'node:path'
 import { transcribeVideo } from './asr.mjs'
 import { detectCuts } from './lib/transnet-lib.mjs'
@@ -335,6 +336,7 @@ function buildDisplaySet(baseFrames, cues) {
 const HIST_TH = 0.2 // 直方图差异内容边界阈值
 const CONSISTENCY_TH = 0.06 // 组内首尾帧 RMSE 阈值（超出则拆组）
 const DP_L = Number(args['dp-l'] || 10)
+const SERIAL = !!args.serial // 强制串行（对照用；默认 worker 并行）
 const SUBS = !!args.subs // 字幕提取（PP-OCR，慢，显式开启） // DP 分段最短段长（帧，5fps 下 20 = 4s）
 const MAX_GROUP_FRAMES = Infinity // 内容组展示帧无上限（每组完整表达）
 
@@ -477,6 +479,38 @@ async function runPool(jobs, limit = MONTAGE_CONCURRENCY) {
   await Promise.all(workers)
 }
 
+
+// TransNet 跑在 worker 线程：主线程同时跑 ASR/OCR，把镜头检测的墙钟时间藏到它们后面。
+// 消息协议见 lib/transnet-worker.mjs。失败时退回主线程同步跑，保证不因 worker 问题丢结果。
+function detectCutsInWorker(video, opts) {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    let worker
+    try {
+      worker = new Worker(new URL('./lib/transnet-worker.mjs', import.meta.url), {
+        workerData: { video, fps: opts.fps, thr: opts.thr },
+      })
+    } catch (e) {
+      reject(e)
+      return
+    }
+    const done = (fn, v) => {
+      if (settled) return
+      settled = true
+      worker.terminate().catch(() => {})
+      fn(v)
+    }
+    worker.once('message', (m) => {
+      if (m && m.ok) done(resolve, m)
+      else done(reject, new Error(m?.error || 'worker 未返回结果'))
+    })
+    worker.once('error', (e) => done(reject, e))
+    worker.once('exit', (code) => {
+      if (!settled && code !== 0) done(reject, new Error(`worker 退出码 ${code}`))
+    })
+  })
+}
+
 async function buildPages(groups, vertical) {
   const pages = []
   const jobs = []
@@ -575,14 +609,17 @@ async function main() {
 
   const { changes, segs, histDiffs, hists } = await detectChanges(fps)
   lap('帧差检测')
-  console.log('[3b] TransNetV2 镜头边界检测（预训练模型）...')
-  const { cuts: tCuts } = await detectCuts(VIDEO, { fps: 5, thr: 0.5 })
-  const cutTimes = [0, ...tCuts.map((c) => c.t).filter((t) => t > 0.5), duration]
-  lap('TransNet 镜头检测')
-  for (const c of tCuts) console.log(`     镜头边界 ${c.t}s p=${c.p}`)
-  console.log(`[3/6] 变化检测 ${changes.length} 个采样点，${segs.length} 个变化段`)
-  for (const s of segs) console.log(`     变化段 ${s.from.toFixed(2)}~${s.to.toFixed(2)}s（峰值 ${s.peak.toFixed(1)}，锚点 ${s.anchors.length}）`)
+  console.log(SERIAL ? '[3b] TransNetV2 镜头边界检测（串行模式）...' : '[3b] TransNetV2 镜头边界检测（worker 线程，与 ASR/OCR 并行）...')
+  const transnetJob = SERIAL
+    ? detectCuts(VIDEO, { fps: 5, thr: 0.5 }).then((r) => ({ ...r, serial: true }))
+    : detectCutsInWorker(VIDEO, { fps: 5, thr: 0.5 })
+    // worker 起不来（极少见）就退回主线程同步检测，绝不让并行影响正确性
+    .catch((e) => {
+      console.log(`     [warn] worker 失败，退回主线程：${String(e?.message || e).slice(0, 160)}`)
+      return detectCuts(VIDEO, { fps: 5, thr: 0.5 }).then((r) => ({ ...r, fallback: true }))
+    })
 
+  // 主线程同时跑 ASR（与 worker 并行）
   let cues = []
   if (ASR) {
     console.log('[4/6] 跑 ASR 转写（sherpa-onnx 本地识别）...')
@@ -597,13 +634,35 @@ async function main() {
     cues = loadCues()
   }
   console.log(`[4/6] 候选 ${cues.length} 条（${ASR ? 'ASR 转写' : CUES_FILE ? '来自 ' + CUES_FILE : '仅视觉模式'}）`)
-
   lap('ASR/候选')
+
+  // 字幕提取（可选）：同样与 TransNet 并行，提前到这里而不是最后
+  let subs = []
+  if (SUBS) {
+    console.log('[subs] 跑字幕提取（PP-OCR 硬字幕链路，与 TransNet 并行）...')
+    const tSub = Date.now()
+    subs = await extractSubtitles(VIDEO, join(OUT, 'subs'), { fps: 2 })
+    console.log(`[subs] 完成 ${((Date.now() - tSub) / 1000).toFixed(1)}s，字幕 ${subs.length} 条`)
+    lap('字幕提取')
+    for (const sm of subs.slice(0, 10)) console.log(`  ${sm.start.toFixed(1)}~${sm.end.toFixed(1)}s conf=${sm.conf.toFixed(2)} | ${sm.text}`)
+  } else {
+    lap('字幕提取')
+  }
+
+  // 取 TransNet 结果（此时 worker 多半已经跑完，这段墙钟接近 0）
+  const tWait = Date.now()
+  const { cuts: tCuts } = await transnetJob
+  const cutTimes = [0, ...tCuts.map((c) => c.t).filter((t) => t > 0.5), duration]
+  console.log(`[3b] TransNet 返回 ${tCuts.length} 个边界${tCuts.length ? '：' + tCuts.map((c) => c.t + 's').join(' / ') : ''}（等待 ${Date.now() - tWait}ms）`)
+  lap('TransNet 镜头检测')
+  console.log(`[3/6] 变化检测 ${changes.length} 个采样点，${segs.length} 个变化段`)
+  for (const s of segs) console.log(`     变化段 ${s.from.toFixed(2)}~${s.to.toFixed(2)}s（峰值 ${s.peak.toFixed(1)}，锚点 ${s.anchors.length}）`)
+
   const extraUsed = await searchCandidates(cues, segs, fps)
   console.log(`[5/6] 补帧/回退 ${extraUsed} 张`)
   for (const c of cues) console.log(`     ${c.id} [${c.extraction}] ${c.s.toFixed(2)}~${c.e.toFixed(2)}s${c.reason ? ' · ' + c.reason : ''}${c.note ? ' · ' + c.note : ''}`)
-
   lap('补帧')
+
   const displaySet = buildDisplaySet(baseFrames, cues)
   const { groups, boundaries } = buildGroups(displaySet, segs, histDiffs, hists, duration, cutTimes)
   const pages = await buildPages(groups, height > width)
@@ -624,17 +683,6 @@ async function main() {
   await runPool(sheetJobs)
   console.log(`[6/6] 组 ${groups.length} 个，页 ${pages.length} 张`)
   lap('分组+分页')
-
-  // 字幕提取（可选）：PP-OCR 硬字幕链路
-  let subs = []
-  if (SUBS) {
-    console.log('[subs] 跑字幕提取（PP-OCR 硬字幕链路）...')
-    const t0 = Date.now()
-    subs = await extractSubtitles(VIDEO, join(OUT, 'subs'), { fps: 2 })
-    console.log(`[subs] 完成 ${((Date.now() - t0) / 1000).toFixed(1)}s，字幕 ${subs.length} 条`)
-    lap('字幕提取')
-    for (const sm of subs.slice(0, 10)) console.log(`  ${sm.start.toFixed(1)}~${sm.end.toFixed(1)}s conf=${sm.conf.toFixed(2)} | ${sm.text}`)
-  }
 
   lap('字幕/其他')
   const problems = runChecks(displaySet, groups, pages)
