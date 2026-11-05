@@ -13,6 +13,7 @@
 | [ADR-0004 动作采样](ADR-0004-action-sampling.md) | 网格够不够用、补抽为什么有效但定位错、镜头运动怎么排除 |
 | [ADR-0005 TransNet 采样](ADR-0005-transnet-sampling.md) | 便宜特征为什么替代不了切点检测（六信号全灭）、STRIDE 减半的零损失提速 |
 | [ADR-0006 流程并发](ADR-0006-pipeline-concurrency.md) | 拼图/补帧为什么是隐藏大头、进程池怎么压、为什么暂不上 worker_threads |
+| [ADR-0007 OCR 并行](ADR-0007-ocr-parallel.md) | 时间全在检测不在识别、字幕带/降分辨率都不可行、分片并行 1.42x 与 cpus() 返回 0 的坑 |
 | [实验 2026-10-30](EXPERIMENT-2026-10-30-asr-ocr.md) | OCR 坐标 bug、OCR 预探测、ASR 分段/阈值/降噪的七组对照 |
 | [实验 2026-11-03](EXPERIMENT-2026-11-03-frame-detail.md) | 三组对照：网格够用 / 关键帧没采到 / 补抽有效但峰值错 |
 

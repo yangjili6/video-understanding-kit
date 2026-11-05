@@ -11,6 +11,7 @@
 - **实验 2026-11-03**：三组对照，含素材、命令、边界。
 
 ### 性能
+- **PP-OCR 检测分片并行**：26s/10 条字幕的片子，字幕提取 86.1s→56.6s，整条管线 98.7s→69.6s（1.42x，三轮交替对照全胜）。det 模型仅 4.5MB，3 路 worker 内存代价约 13.5MB。见 [ADR-0007](docs/ADR-0007-ocr-parallel.md)。
 - **TransNet 移到 worker 线程并行**：主线程跑 ASR/OCR 的同时做镜头检测，三轮交替对照 24.4s→20.1s（1.21x）；代价是 ASR 被两个 WASM 的 CPU 争抢拖慢 2.1s。`--serial` 可强制串行。见 [ADR-0006](docs/ADR-0006-pipeline-concurrency.md)。
 - **流程并发化**：拼图（逐页 montage）与补帧（逐帧 ffmpeg）改成进程池，分页 21.6s→5.0s、60 张补帧 9.9s；15s 片总耗时 42.3s→33.8s。见 [ADR-0006](docs/ADR-0006-pipeline-concurrency.md)。
 - **TransNet 窗口步长 50 → 100**（窗口不重叠）：三视频合计 97.9s → 49.9s，切点结果完全一致（CONCAT 5.8/11.8/17.8、anti-late 18.2、羽毛球 0）。见 [ADR-0005](docs/ADR-0005-transnet-sampling.md)。

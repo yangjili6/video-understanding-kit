@@ -1,10 +1,14 @@
 // 字幕提取模块（安全版：整帧差异跳帧，不做 ROI 裁剪——ROI det 实测会漏中文行）
 import { execFileSync } from 'node:child_process'
+import { cpus } from 'node:os'
+import { Worker } from 'node:worker_threads'
 import { mkdirSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { detect, recognizeCrop } from './lib/ocr-pp.mjs'
 
 const run = (c, a, o = {}) => execFileSync(c, a, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], ...o })
+
+
 
 function padBox(box, px = 6, py = 3) {
   return { x0: Math.max(0, box.x0 - px), y0: Math.max(0, box.y0 - py), x1: box.x1 + px, y1: box.y1 + py }
@@ -56,6 +60,42 @@ export function selectSubtitleLine(boxes, fw = FRAME_W, fh = FRAME_W * 9 / 16) {
 }
 
 // 提取字幕：返回 [{start, end, t, text, conf}]
+
+// ── 并行检测 ─────────────────────────────────────────────────────────────
+// det 是逐帧独立推理，天然可分片。det 模型只有 4.5MB，4 个 worker 的
+// 模型副本约 20MB，比并列跑 sherpa 安全得多。
+const CPU_COUNT = cpus().length || 4 // Android 上 cpus() 可能是空数组，兜底 4
+const DET_WORKERS = Math.max(1, Math.min(4, Number(process.env.SUBS_DET_WORKERS) || Math.max(1, CPU_COUNT - 1)))
+
+function runDetWorker(frames) {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    let w
+    try {
+      w = new Worker(new URL('./lib/ocr-det-worker.mjs', import.meta.url), { workerData: { frames } })
+    } catch (e) { reject(e); return }
+    const done = (fn, v) => { if (settled) return; settled = true; w.terminate().catch(() => {}); fn(v) }
+    w.once('message', (m) => (m && m.ok ? done(resolve, m.boxes) : done(reject, new Error(m?.error || 'worker 无结果'))))
+    w.once('error', (e) => done(reject, e))
+    w.once('exit', (code) => { if (!settled && code !== 0) done(reject, new Error('worker 退出码 ' + code)) })
+  })
+}
+
+async function detectFramesParallel(paths, concurrency = DET_WORKERS) {
+  if (paths.length === 0) return []
+  if (paths.length <= concurrency * 2) {
+    // 帧太少，开 worker 反而亏（每个 worker 要加载一次模型）
+    const out = []
+    for (const p of paths) { try { out.push(await detect(p)) } catch { out.push([]) } }
+    return out
+  }
+  const per = Math.ceil(paths.length / concurrency)
+  const chunks = []
+  for (let i = 0; i < paths.length; i += per) chunks.push(paths.slice(i, i + per))
+  const parts = await Promise.all(chunks.map((c) => runDetWorker(c)))
+  return parts.flat()
+}
+
 export async function extractSubtitles(video, outDir, opts = {}) {
   const FPS = opts.fps || 2
   const frameDir = join(outDir, 'frames')
@@ -79,12 +119,15 @@ export async function extractSubtitles(video, outDir, opts = {}) {
   // 判定保守：只要有一帧命中就照常全量跑，不做进一步裁剪。
   const PROBE_N = Number(process.env.SUBS_PROBE_N ?? 12)
   if (opts.probe !== false && PROBE_N > 0 && files.length > PROBE_N * 2) {
-    let hit = 0
+    const probePaths = []
     for (let k = 0; k < PROBE_N; k++) {
       const idx = Math.floor(((k + 0.5) * files.length) / PROBE_N)
-      try {
-        if (selectSubtitleLine(await detect(join(frameDir, files[idx])), FW, FH)) hit++
-      } catch { /* 单帧失败不计命中 */ }
+      probePaths.push(join(frameDir, files[idx]))
+    }
+    const probeBoxes = await detectFramesParallel(probePaths)
+    let hit = 0
+    for (const boxes of probeBoxes) {
+      if (selectSubtitleLine(boxes, FW, FH)) hit++
     }
     console.log(`  [subs] 预探测 ${PROBE_N} 帧，命中 ${hit}`)
     if (hit === 0) {
@@ -93,33 +136,19 @@ export async function extractSubtitles(video, outDir, opts = {}) {
     }
   }
 
+  // 所有帧一次性并行检测（分片交给 worker），再按时间顺序组事件。
+  const statRecMs = { v: 0 }
+  const allPaths = files.map((f) => join(frameDir, f))
+  const _td0 = Date.now()
+  const allBoxes = await detectFramesParallel(allPaths)
+  const statDetMs = Date.now() - _td0
   const frames = []
-  let lastBoxes = []
-  let prevSmall = null
-  let statDet = 0, statSkip = 0
   for (let i = 0; i < files.length; i++) {
-    const f = join(frameDir, files[i])
-    const small = smallBuf.subarray(i * smallFs, (i + 1) * smallFs)
-    let diff = 0
-    if (prevSmall && prevSmall.length === small.length) {
-      let sum = 0
-      for (let k = 0; k < small.length; k++) sum += Math.abs(small[k] - prevSmall[k])
-      diff = sum / small.length
-    }
-    prevSmall = small
-    let boxes = []
-    if (lastBoxes.length && diff < SKIP_TH) {
-      boxes = lastBoxes
-      statSkip++
-    } else {
-      try { boxes = await detect(f) } catch { boxes = [] }
-      statDet++
-    }
-    lastBoxes = boxes
-    const main = selectSubtitleLine(boxes, FW, FH)
-    frames.push({ t: i / FPS, file: f, main, diff })
+    const main = selectSubtitleLine(allBoxes[i] || [], FW, FH)
+    frames.push({ t: i / FPS, file: allPaths[i], main })
   }
-  console.log(`  det ${statDet}/${files.length} 帧，跳过 ${statSkip} 帧（帧空间 ${FW}×${FH}）`)
+  console.log(`  det ${files.length} 帧（并行 ${DET_WORKERS} 路，帧空间 ${FW}×${FH}）`)
+  console.log(`  [timing] det ${(statDetMs / 1000).toFixed(2)}s | rec ${(statRecMs.v / 1000).toFixed(2)}s`)
 
   const events = []
   for (const fr of frames) {
@@ -145,7 +174,9 @@ export async function extractSubtitles(video, outDir, opts = {}) {
   for (const ev of events) {
     if (!ev.selected || !ev.selected.main) continue
     try {
+      const _tr = Date.now()
       const { text, conf } = await recognizeCrop(ev.selected.file, padBox(ev.selected.main))
+      statRecMs.v += Date.now() - _tr
       const clean = text.trim()
       if (clean.length >= 2 && conf >= 0.5) results.push({ start: ev.start, end: ev.end, t: ev.selected.t, text: clean, conf })
     } catch { /* skip */ }
