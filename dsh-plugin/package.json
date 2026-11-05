@@ -20,7 +20,8 @@
     "lib/videokit/subs.mjs",
     "lib/videokit/download-models.mjs",
     "lib/videokit/lib/ocr-pp.mjs",
-    "lib/videokit/lib/transnet-lib.mjs"
+    "lib/videokit/lib/transnet-lib.mjs",
+    "lib/videokit/lib/transnet-worker.mjs"
   ],
   "license": "MIT",
   "dsh": {
