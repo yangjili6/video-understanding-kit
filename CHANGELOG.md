@@ -3,7 +3,7 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 版本号以 `dsh-plugin/package.json` 的 `version` 为准，根 `package.json` 与之同号。
 
-## [未发布]
+## [0.2.2] - 2026-11-05
 
 ### 文档
 - **ADR-0003**：画面运动强度 —— 光流 vs 帧差。实测低运动占比仅 2.2%，自适应抽帧**收益不足，标记 Rejected**。
