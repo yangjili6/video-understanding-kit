@@ -12,7 +12,7 @@
 // 原型边界：ASR/OCR 只生成候选，视觉事件语义由调用方核验；本程序不自动给出视频内容结论。
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync, lstatSync } from 'node:fs'
-import { cpus } from 'node:os'
+import { detectCpuTopology, ioConcurrency, detectLoad } from './lib/cpu.mjs'
 import { Worker } from 'node:worker_threads'
 import { join } from 'node:path'
 import { transcribeVideo } from './asr.mjs'
@@ -457,7 +457,9 @@ function buildGroups(displaySet, segs, histDiffs, hists, duration, cutTimes) {
 
 // 并发执行外部命令：montage 拼图是纯 CPU 子进程，串行跑一页一等，页多时（20+ 页）
 // 光拼图就要十几秒。改成并发池后压到 1/4~1/5（AGENTS：真源改动需 pnpm run sync）。
-const MONTAGE_CONCURRENCY = Math.max(2, Math.min(6, cpus().length - 1))
+// 拼图是子进程 IO 密集，可以用到小核；按在线核数算，留一个给主线程
+const CPU_TOPOLOGY = detectCpuTopology()
+const MONTAGE_CONCURRENCY = ioConcurrency(CPU_TOPOLOGY, 8)
 function runAsync(cmd, argv) {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, argv, { stdio: ['ignore', 'ignore', 'pipe'] })
@@ -609,8 +611,13 @@ async function main() {
 
   const { changes, segs, histDiffs, hists } = await detectChanges(fps)
   lap('帧差检测')
-  console.log(SERIAL ? '[3b] TransNetV2 镜头边界检测（串行模式）...' : '[3b] TransNetV2 镜头边界检测（worker 线程，与 ASR/OCR 并行）...')
-  const transnetJob = SERIAL
+  // 负载必须在「做决定的这一刻」测：模块加载时 CPU 还空着，一定测出 cool。
+  const detectedLoad = detectLoad(CPU_TOPOLOGY)
+  console.log(SERIAL || detectedLoad.level === 'hot' ? '[3b] TransNetV2 镜头边界检测（串行模式）...' : '[3b] TransNetV2 镜头边界检测（worker 线程，与 ASR/OCR 并行）...')
+  const autoSerial = !SERIAL && detectedLoad.level === 'hot'
+  const effectiveSerial = SERIAL || autoSerial
+  if (autoSerial) console.log(`     [load] ${detectedLoad.note} → 判为过热，本次走串行`)
+  const transnetJob = effectiveSerial
     ? detectCuts(VIDEO, { fps: 5, thr: 0.5 }).then((r) => ({ ...r, serial: true }))
     : detectCutsInWorker(VIDEO, { fps: 5, thr: 0.5 })
     // worker 起不来（极少见）就退回主线程同步检测，绝不让并行影响正确性

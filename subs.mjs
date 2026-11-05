@@ -2,6 +2,7 @@
 import { execFileSync } from 'node:child_process'
 import { cpus } from 'node:os'
 import { Worker } from 'node:worker_threads'
+import { detectCpuTopology, computeConcurrency, detectLoad } from './lib/cpu.mjs'
 import { mkdirSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { detect, recognizeCrop } from './lib/ocr-pp.mjs'
@@ -64,8 +65,18 @@ export function selectSubtitleLine(boxes, fw = FRAME_W, fh = FRAME_W * 9 / 16) {
 // ── 并行检测 ─────────────────────────────────────────────────────────────
 // det 是逐帧独立推理，天然可分片。det 模型只有 4.5MB，4 个 worker 的
 // 模型副本约 20MB，比并列跑 sherpa 安全得多。
-const CPU_COUNT = cpus().length || 4 // Android 上 cpus() 可能是空数组，兜底 4
-const DET_WORKERS = Math.max(1, Math.min(4, Number(process.env.SUBS_DET_WORKERS) || Math.max(1, CPU_COUNT - 1)))
+// 并发度按「大核数」定：这台机器是 1+3+4，能跑满的只有 4 个核
+const CPU_TOPOLOGY = detectCpuTopology()
+// 热时退回单路：多个 worker 抢核会把整条管线拖慢（ADR-0007 实测过）。
+// 注意：必须在 OCR 真正开始时才测负载，模块加载时 CPU 还空着。
+function detWorkerCount() {
+  if (process.env.SUBS_DET_WORKERS) return Number(process.env.SUBS_DET_WORKERS)
+  const load = detectLoad(CPU_TOPOLOGY)
+  const full = computeConcurrency(CPU_TOPOLOGY, 4)
+  if (load.level === 'hot') return 1
+  if (load.level === 'warm') return Math.max(1, Math.min(2, full))
+  return full
+}
 
 function runDetWorker(frames) {
   return new Promise((resolve, reject) => {
@@ -81,7 +92,7 @@ function runDetWorker(frames) {
   })
 }
 
-async function detectFramesParallel(paths, concurrency = DET_WORKERS) {
+async function detectFramesParallel(paths, concurrency = detWorkerCount()) {
   if (paths.length === 0) return []
   if (paths.length <= concurrency * 2) {
     // 帧太少，开 worker 反而亏（每个 worker 要加载一次模型）
@@ -140,14 +151,15 @@ export async function extractSubtitles(video, outDir, opts = {}) {
   const statRecMs = { v: 0 }
   const allPaths = files.map((f) => join(frameDir, f))
   const _td0 = Date.now()
-  const allBoxes = await detectFramesParallel(allPaths)
+  const detWorkers = detWorkerCount()
+  const allBoxes = await detectFramesParallel(allPaths, detWorkers)
   const statDetMs = Date.now() - _td0
   const frames = []
   for (let i = 0; i < files.length; i++) {
     const main = selectSubtitleLine(allBoxes[i] || [], FW, FH)
     frames.push({ t: i / FPS, file: allPaths[i], main })
   }
-  console.log(`  det ${files.length} 帧（并行 ${DET_WORKERS} 路，帧空间 ${FW}×${FH}）`)
+  console.log(`  det ${files.length} 帧（并行 ${detWorkers} 路，帧空间 ${FW}×${FH}）`)
   console.log(`  [timing] det ${(statDetMs / 1000).toFixed(2)}s | rec ${(statRecMs.v / 1000).toFixed(2)}s`)
 
   const events = []

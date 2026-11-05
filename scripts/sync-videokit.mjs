@@ -30,6 +30,7 @@ const FILES = [
   'lib/transnet-lib.mjs',
   'lib/transnet-worker.mjs',
   'lib/ocr-det-worker.mjs',
+  'lib/cpu.mjs',
 ]
 
 const BANNER = [
