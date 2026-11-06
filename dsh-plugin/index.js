@@ -493,6 +493,31 @@ function readFullReviewDefault() {
   try { return !!loadConfig().fullReview } catch { return false }
 }
 
+// 视频分析产物会留下几百张网格图，累积起来能到 GB 级（实测一晚上 1.3G / 1 万张）。
+// 每次分析后按修改时间保留最近 KEEP 个目录，其余整目录删除。
+const KEEP_OUT_DIRS = Number(process.env.DSH_VIDEO_KEEP_OUT || 5)
+
+async function sweepOutDirs() {
+  try {
+    const root = join(storageRoot(), 'out')
+    if (!existsSync(root)) return 0
+    const names = readdirSync(root)
+    if (names.length <= KEEP_OUT_DIRS) return 0
+    const items = names.map((n) => {
+      const p = join(root, n)
+      try { return { p, t: statSync(p).mtimeMs } } catch { return { p, t: 0 } }
+    }).sort((a, b) => b.t - a.t)
+    let removed = 0
+    for (const it of items.slice(KEEP_OUT_DIRS)) {
+      await rm(it.p, { recursive: true, force: true }).catch(() => {})
+      removed++
+    }
+    return removed
+  } catch {
+    return 0
+  }
+}
+
 function configFile() {
   return join(storageRoot(), 'config.json')
 }
@@ -925,6 +950,7 @@ export function apply(ctx) {
 
       try {
         await sweepDownloads()
+        await sweepOutDirs()
         const resolved = await resolveVideo(args.video)
 
         if (typeof resolved === 'string') {
