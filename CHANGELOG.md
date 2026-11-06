@@ -3,6 +3,15 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 版本号以 `dsh-plugin/package.json` 的 `version` 为准，根 `package.json` 与之同号。
 
+## [0.2.5] - 2026-11-07
+
+### 新增
+- **侧栏面板加「逐页全看网格」开关**：控制 `video_analyze` 的默认网格阅读深度。
+  开＝每页都看（准确、token 大）；关＝只看关键页（省 token）。
+  工具参数显式传 `fullReview` 时以参数为准，面板只决定默认值。
+
+  实现注意：默认值在**每次调用时读取**，不做成模块级常量——面板改了要立刻生效。
+
 ## [0.2.4] - 2026-11-07
 
 ### 新增

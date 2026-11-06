@@ -264,6 +264,7 @@ window.__ModuleLoader__.load({
 
       const ocrOn = !!(cfg && cfg.ocr)
       const asrOn = !!(cfg && cfg.asr)
+      const fullReviewOn = !!(cfg && cfg.fullReview)
 
       return h(
         'div',
@@ -366,6 +367,31 @@ window.__ModuleLoader__.load({
         h(
           'div',
           null,
+          h('div', { className: 'dvk-section-title', style: { padding: '14px 16px 0' } }, '网格阅读'),
+          h(
+            'div',
+            { className: 'dvk-row' },
+            h(
+              'div',
+              { className: 'dvk-row-main' },
+              h('div', { className: 'dvk-row-name' }, '逐页全看网格'),
+              h(
+                'div',
+                { className: 'dvk-row-desc' },
+                '开：每一页网格都看，准确但 token 消耗大（27 页视频约读 27 张图）。关：只看关键页，省 token 但可能漏细节。video_analyze 显式传 fullReview 时以参数为准。',
+              ),
+            ),
+            h(
+              'div',
+              { className: 'dvk-row-side' },
+              h(Switch, {
+                on: fullReviewOn,
+                disabled: loading || busy,
+                label: '逐页全看网格',
+                onToggle: () => patch({ fullReview: !fullReviewOn, updatedBy: 'panel' }),
+              }),
+            ),
+          ),
           h('div', { className: 'dvk-section-title', style: { padding: '14px 16px 0' } }, '最近运行'),
           recent.length
             ? h(

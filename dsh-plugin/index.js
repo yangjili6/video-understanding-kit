@@ -24,7 +24,7 @@ import { basename, delimiter, dirname, extname, isAbsolute, join, resolve, sep }
 import { fileURLToPath } from 'node:url'
 
 export const name = 'dsh-video-kit'
-export const version = '0.2.4'
+export const version = '0.2.5'
 // webServer 只用来给侧栏面板提供配置读写（/dsh-video-kit-api）。
 export const inject = ['tools', 'webServer']
 
@@ -486,7 +486,12 @@ function removeAsset(target) {
 // 语义：面板上的开关是「默认行为」，工具参数显式传了就以参数为准。
 // 这样面板不用管每次调用的特例，Agent 也能针对性覆盖。
 
-const DEFAULT_CONFIG = { ocr: true, asr: false, baseFps: 5, updatedAt: null, updatedBy: null }
+const DEFAULT_CONFIG = { ocr: true, asr: false, baseFps: 5, fullReview: false, updatedAt: null, updatedBy: null }
+
+// 面板默认值：每次调用时读，面板改了立刻生效（不要做成模块级常量）
+function readFullReviewDefault() {
+  try { return !!loadConfig().fullReview } catch { return false }
+}
 
 function configFile() {
   return join(storageRoot(), 'config.json')
@@ -905,7 +910,7 @@ export function apply(ctx) {
         subs: { type: 'boolean', description: '是否提取硬字幕（PP-OCR）。不传则用侧栏面板配置（默认开）；画面无字时传 false 提速' },
         asr: { type: 'boolean', description: '是否跑语音识别（本地 sherpa-onnx）。不传则用侧栏面板配置（默认关）。视频有配音但没有硬字幕时，务必传 true，否则会漏掉台词' },
         baseFps: { type: 'number', description: '基础抽帧率；不传则用面板配置（默认 5）' },
-        fullReview: { type: 'boolean', description: '是否逐页查看所有网格：true=每张都看（准确但 token 消耗大），false/不传=只看关键页（省 token）' },
+        fullReview: { type: 'boolean', description: '是否逐页查看所有网格：true=每张都看（准确但 token 消耗大），false/不传=用侧栏面板的默认值' },
       },
       additionalProperties: false,
     },
@@ -1002,7 +1007,7 @@ export function apply(ctx) {
           // 分段耗时（秒）：TransNet / ASR / 补帧 / 分页各占多少，用于定位下一次该压哪里
           timings: idx.timings || null,
           elapsedMs: Date.now() - t0,
-          nextStep: `${args.fullReview === true ? GRID_RULE : GRID_RULE_LITE}` + (
+          nextStep: `${(args.fullReview ?? readFullReviewDefault()) === true ? GRID_RULE : GRID_RULE_LITE}` + (
             subs.length > 0
               ? ` subs/asr 只是台词，不能代替画面。硬字幕已给出（含时间戳），需要更细的帧再用 video_frame。${gridFiles.length > 12 ? GRID_MORE : ''}`
               : asrCues.length > 0
