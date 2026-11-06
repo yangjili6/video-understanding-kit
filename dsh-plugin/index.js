@@ -1,3 +1,8 @@
+// 网格阅读纪律：每一页都要看，不许跳页。
+// 原提示写「至少第 1 张 + 关键转折页」，等于给了偷懒的口子。
+const GRID_RULE = '⚠️ 描述画面内容前，必须逐页打开 grids[] 里的**每一张**图，不许跳页。看完之后可以判断哪些不重要、不写进回答——但「没看」和「看完觉得不重要」是两回事。'
+const GRID_MORE = ' grids 只含前 12 页，gridsCount 是总页数；若 gridsCount > grids.length，其余页需用 read_image 从 gridsDir 补看。'
+
 // ── dsh-video-kit 视频理解工具包 ──────────────────────────────────────────────
 // 把 video-understanding-kit 的能力做成 DSH 工具，让 Agent 在工具列表里直接看见。
 // 设计要点：工具返回「结构化文本摘要 + 产物路径」，不直接返回图片；
@@ -995,12 +1000,12 @@ export function apply(ctx) {
           timings: idx.timings || null,
           elapsedMs: Date.now() - t0,
           nextStep: subs.length > 0
-            ? '⚠️ 描述画面内容前，必须先用 read_image 打开 grids[] 里的图（至少第 1 张 + 关键转折页）。subs/asr 只是台词，不能代替画面。硬字幕已给出（含时间戳），需要更细的帧再用 video_frame。'
+            ? `${GRID_RULE} subs/asr 只是台词，不能代替画面。硬字幕已给出（含时间戳），需要更细的帧再用 video_frame。${gridFiles.length > 12 ? GRID_MORE : ''}`
             : asrCues.length > 0
-              ? '⚠️ 描述画面内容前，必须先用 read_image 打开 grids[] 里的图（至少第 1 张 + 关键转折页）。asr 只是台词，不能代替画面——只凭台词说画面会导致误判。'
+              ? `${GRID_RULE} asr 只是台词，不能代替画面——只凭台词说画面会导致误判。${gridFiles.length > 12 ? GRID_MORE : ''}`
               : asrOn
-                ? '⚠️ 没有字幕也没有台词（可能纯音乐/环境音）。描述画面内容前，必须先用 read_image 打开 grids[] 里的图；需要更细的帧再用 video_frame。'
-                : '⚠️ 本次未开启 ASR，也没有硬字幕。描述画面内容前，必须先用 read_image 打开 grids[] 里的图；有配音的话可重跑并传 asr:true。',
+                ? `${GRID_RULE} 本片没有字幕也没有台词（可能纯音乐/环境音）。需要更细的帧再用 video_frame。${gridFiles.length > 12 ? GRID_MORE : ''}`
+                : `${GRID_RULE} 本次未开启 ASR，也没有硬字幕；有配音的话可重跑并传 asr:true。${gridFiles.length > 12 ? GRID_MORE : ''}`,
         }
       } catch (e) {
         return { ok: false, error: String(e?.message || e) }

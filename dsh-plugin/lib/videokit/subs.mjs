@@ -63,6 +63,33 @@ export function selectSubtitleLine(boxes, fw = FRAME_W, fh = FRAME_W * 9 / 16) {
   return lines.sort((a, b) => (b.x1 - b.x0) - (a.x1 - a.x0))[0] || null
 }
 
+
+// ── 分阶段计时（GPT/霁璃建议的排查口径）──
+// wall 用单调时钟（performance.now），不受系统校时影响；
+// cpu 用 process.cpuUsage() 的差值——worker 是同进程线程，天然被覆盖，
+// 不要再把各 worker 自己采的进程级数值相加。
+const _stage = { t0: performance.now(), c0: process.cpuUsage(), marks: [] }
+
+function stageMark(name) {
+  const t = performance.now()
+  const c = process.cpuUsage()
+  const wall = t - _stage.t0
+  const cpu = (c.user - _stage.c0.user) + (c.system - _stage.c0.system)  // 微秒
+  _stage.marks.push({ stage: name, wallMs: +wall.toFixed(1), cpuMs: +(cpu / 1000).toFixed(1), par: +(cpu / 1000 / wall).toFixed(2) })
+  _stage.t0 = t
+  _stage.c0 = c
+}
+
+export function dumpStageTiming() {
+  return _stage.marks
+}
+
+export function resetStageTiming() {
+  _stage.t0 = performance.now()
+  _stage.c0 = process.cpuUsage()
+  _stage.marks = []
+}
+
 // 提取字幕：返回 [{start, end, t, text, conf}]
 
 // ── 并行检测 ─────────────────────────────────────────────────────────────
@@ -184,6 +211,7 @@ export async function extractSubtitles(video, outDir, opts = {}) {
       const idx = Math.floor(((k + 0.5) * files.length) / PROBE_N)
       probePaths.push(join(frameDir, files[idx]))
     }
+    stageMark('（预处理/抽帧）')
     const probeBoxes = await detectFramesParallel(probePaths)
     let hit = 0
     for (const boxes of probeBoxes) {
@@ -201,7 +229,9 @@ export async function extractSubtitles(video, outDir, opts = {}) {
   const allPaths = files.map((f) => join(frameDir, f))
   const _td0 = Date.now()
   const detWorkers = detWorkerCount()
+    stageMark('预探测')
   const allBoxes = await detectFramesParallel(allPaths, detWorkers)
+  stageMark('全量检测')
   const statDetMs = Date.now() - _td0
   const frames = []
   for (let i = 0; i < files.length; i++) {

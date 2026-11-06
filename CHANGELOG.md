@@ -69,7 +69,7 @@
 - 插件给子进程拼 PATH 时用 `:` 作分隔符，Windows 会因此拼出一条无效 PATH；改为 `path.delimiter`。
 - Windows + ImageMagick 7 没有 `convert`/`montage`/`identify`/`compare` 独立命令：新增自动适配，把这些命令名映射到 `magick.exe`（按 `argv[0]` 分派），DLL 由 ImageMagick 安装目录提供。
 
-## [未发布]
+## [0.2.3] - 2026-11-07
 
 只调整工程结构，不改变视频分析行为与输出格式。
 

@@ -20,7 +20,7 @@ import { Worker } from 'node:worker_threads'
 import { join } from 'node:path'
 import { transcribeVideo } from './asr.mjs'
 import { detectCuts } from './lib/transnet-lib.mjs'
-import { extractSubtitles } from './subs.mjs'
+import { extractSubtitles, dumpStageTiming, resetStageTiming } from './subs.mjs'
 
 // ---------------------------------------------------------------- 参数
 
@@ -651,7 +651,12 @@ async function main() {
   if (SUBS) {
     console.log('[subs] 跑字幕提取（PP-OCR 硬字幕链路，与 TransNet 并行）...')
     const tSub = Date.now()
+    resetStageTiming()
     subs = await extractSubtitles(VIDEO, join(OUT, 'subs'), { fps: 2 })
+    // 分阶段 wall + 进程级 CPU（覆盖 worker 线程）
+    for (const m of dumpStageTiming()) {
+      console.log(`  [stage] ${m.stage}: wall ${m.wallMs}ms | cpu ${m.cpuMs}ms | par ${m.par}`)
+    }
     console.log(`[subs] 完成 ${((Date.now() - tSub) / 1000).toFixed(1)}s，字幕 ${subs.length} 条`)
     lap('字幕提取')
     for (const sm of subs.slice(0, 10)) console.log(`  ${sm.start.toFixed(1)}~${sm.end.toFixed(1)}s conf=${sm.conf.toFixed(2)} | ${sm.text}`)
