@@ -71,6 +71,20 @@ async function detectSerial(paths) {
   return Date.now() - t0
 }
 
+// 档间冷却：连续测量会把设备从「短时突发」拖进「持续负载限速」，
+// 实测同一档 3 次能从 11.15s 漂到 22.98s。固定间隔比读频率可靠
+// ——空闲时频率也是低值，区分不了「凉了」和「睡着了」。
+const COOLDOWN_MS = Number(process.env.COOLDOWN_MS || 20000)
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+async function waitCooldown(label) {
+  if (COOLDOWN_MS <= 0) return
+  process.stdout.write(`[calibrate] 冷却 ${(COOLDOWN_MS / 1000).toFixed(0)}s…`)
+  await sleep(COOLDOWN_MS)
+  process.stdout.write(' 继续\n')
+  void label
+}
+
 async function main() {
   const args = parseArgs()
   const topology = detectCpuTopology()
@@ -99,13 +113,17 @@ async function main() {
   function med(xs) { const a = [...xs].sort((x, y) => x - y); const m = Math.floor(a.length / 2); return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2 }
 
   const serialSamples = []
-  for (let r = 0; r < REPS; r++) serialSamples.push(await detectSerial(picked))
+  for (let r = 0; r < REPS; r++) {
+    if (r > 0) await waitCooldown('serial')
+    serialSamples.push(await detectSerial(picked))
+  }
   const serialMs = med(serialSamples)
   results.push({ concurrency: 1, ms: serialMs, samples: serialSamples })
   console.log(`[calibrate] 1 路: 中位 ${(serialMs / 1000).toFixed(2)}s（样本 ${serialSamples.map((x) => (x / 1000).toFixed(2)).join('/')}）`)
 
   const upper = Math.min(args.max, topology.big)
   for (let c = 2; c <= upper; c++) {
+    await waitCooldown(c)
     const samples = []
     for (let r = 0; r < REPS; r++) samples.push(await detectParallel(picked, c))
     const ms = med(samples)
