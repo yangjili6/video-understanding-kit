@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="300" viewBox="0 0 760 300">
+<rect width="760" height="300" fill="#0f1419"/>
+<text x="60" y="92" font-size="38" fill="#e6edf3" font-weight="400" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">E</text>
+<text x="80" y="108" font-size="22" fill="#8b98a8" font-weight="400" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">n</text>
+<text x="122" y="92" font-size="34" fill="#e6edf3" font-weight="400" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">=</text>
+<text x="178" y="78" font-size="30" fill="#e6edf3" font-weight="400" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">T</text>
+<text x="196" y="92" font-size="19" fill="#8b98a8" font-weight="400" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">1</text>
+<text x="228" y="78" font-size="30" fill="#8b98a8" font-weight="400" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">/</text>
+<text x="258" y="78" font-size="30" fill="#e6edf3" font-weight="400" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">T</text>
+<text x="276" y="92" font-size="19" fill="#8b98a8" font-weight="400" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">n</text>
+<line x1="160" y1="104" x2="300" y2="104" stroke="#e6edf3" stroke-width="2.4"/>
+<text x="230" y="136" font-size="30" fill="#e6edf3" font-weight="400" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">n</text>
+<text x="348" y="92" font-size="30" fill="#e6edf3" font-weight="400" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">× 100%</text>
+<text x="500" y="92" font-size="30" fill="#3fb950" font-weight="400" text-anchor="start" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">≥ 40%</text>
+<text x="60" y="232" font-size="38" fill="#e6edf3" font-weight="400" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">G</text>
+<text x="80" y="248" font-size="22" fill="#8b98a8" font-weight="400" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">n</text>
+<text x="122" y="232" font-size="34" fill="#e6edf3" font-weight="400" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">=</text>
+<text x="196" y="218" font-size="30" fill="#e6edf3" font-weight="400" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">T</text>
+<text x="216" y="232" font-size="17" fill="#8b98a8" font-weight="400" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">n−1</text>
+<text x="276" y="218" font-size="30" fill="#8b98a8" font-weight="400" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">−</text>
+<text x="316" y="218" font-size="30" fill="#e6edf3" font-weight="400" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">T</text>
+<text x="334" y="232" font-size="19" fill="#8b98a8" font-weight="400" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">n</text>
+<line x1="170" y1="244" x2="356" y2="244" stroke="#e6edf3" stroke-width="2.4"/>
+<text x="238" y="278" font-size="30" fill="#e6edf3" font-weight="400" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">T</text>
+<text x="258" y="292" font-size="17" fill="#8b98a8" font-weight="400" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">n−1</text>
+<text x="400" y="232" font-size="30" fill="#e6edf3" font-weight="400" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">× 100%</text>
+<text x="552" y="232" font-size="30" fill="#3fb950" font-weight="400" text-anchor="start" font-family="'Latin Modern Math','STIX Two Math','Times New Roman',serif">≥ 8%</text>
+</svg>
