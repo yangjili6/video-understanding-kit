@@ -1,6 +1,8 @@
 // 网格阅读纪律：每一页都要看，不许跳页。
 // 原提示写「至少第 1 张 + 关键转折页」，等于给了偷懒的口子。
 const GRID_RULE = '⚠️ 描述画面内容前，必须逐页打开 grids[] 里的**每一张**图，不许跳页。看完之后可以判断哪些不重要、不写进回答——但「没看」和「看完觉得不重要」是两回事。'
+// 精简模式：不强制逐页，允许挑关键页（省 token，但可能漏细节）
+const GRID_RULE_LITE = '⚠️ 描述画面内容前，先用 read_image 打开 grids[] 里的图（至少第 1 张 + 关键转折页）。看完可以判断后面几页是否还有变化。'
 const GRID_MORE = ' grids 只含前 12 页，gridsCount 是总页数；若 gridsCount > grids.length，其余页需用 read_image 从 gridsDir 补看。'
 
 // ── dsh-video-kit 视频理解工具包 ──────────────────────────────────────────────
@@ -22,7 +24,7 @@ import { basename, delimiter, dirname, extname, isAbsolute, join, resolve, sep }
 import { fileURLToPath } from 'node:url'
 
 export const name = 'dsh-video-kit'
-export const version = '0.2.1'
+export const version = '0.2.4'
 // webServer 只用来给侧栏面板提供配置读写（/dsh-video-kit-api）。
 export const inject = ['tools', 'webServer']
 
@@ -903,6 +905,7 @@ export function apply(ctx) {
         subs: { type: 'boolean', description: '是否提取硬字幕（PP-OCR）。不传则用侧栏面板配置（默认开）；画面无字时传 false 提速' },
         asr: { type: 'boolean', description: '是否跑语音识别（本地 sherpa-onnx）。不传则用侧栏面板配置（默认关）。视频有配音但没有硬字幕时，务必传 true，否则会漏掉台词' },
         baseFps: { type: 'number', description: '基础抽帧率；不传则用面板配置（默认 5）' },
+        fullReview: { type: 'boolean', description: '是否逐页查看所有网格：true=每张都看（准确但 token 消耗大），false/不传=只看关键页（省 token）' },
       },
       additionalProperties: false,
     },
@@ -999,13 +1002,15 @@ export function apply(ctx) {
           // 分段耗时（秒）：TransNet / ASR / 补帧 / 分页各占多少，用于定位下一次该压哪里
           timings: idx.timings || null,
           elapsedMs: Date.now() - t0,
-          nextStep: subs.length > 0
-            ? `${GRID_RULE} subs/asr 只是台词，不能代替画面。硬字幕已给出（含时间戳），需要更细的帧再用 video_frame。${gridFiles.length > 12 ? GRID_MORE : ''}`
-            : asrCues.length > 0
-              ? `${GRID_RULE} asr 只是台词，不能代替画面——只凭台词说画面会导致误判。${gridFiles.length > 12 ? GRID_MORE : ''}`
-              : asrOn
-                ? `${GRID_RULE} 本片没有字幕也没有台词（可能纯音乐/环境音）。需要更细的帧再用 video_frame。${gridFiles.length > 12 ? GRID_MORE : ''}`
-                : `${GRID_RULE} 本次未开启 ASR，也没有硬字幕；有配音的话可重跑并传 asr:true。${gridFiles.length > 12 ? GRID_MORE : ''}`,
+          nextStep: `${args.fullReview === true ? GRID_RULE : GRID_RULE_LITE}` + (
+            subs.length > 0
+              ? ` subs/asr 只是台词，不能代替画面。硬字幕已给出（含时间戳），需要更细的帧再用 video_frame。${gridFiles.length > 12 ? GRID_MORE : ''}`
+              : asrCues.length > 0
+                ? ` asr 只是台词，不能代替画面——只凭台词说画面会导致误判。${gridFiles.length > 12 ? GRID_MORE : ''}`
+                : asrOn
+                  ? ` 本片没有字幕也没有台词（可能纯音乐/环境音）。需要更细的帧再用 video_frame。${gridFiles.length > 12 ? GRID_MORE : ''}`
+                  : ` 本次未开启 ASR，也没有硬字幕；有配音的话可重跑并传 asr:true。${gridFiles.length > 12 ? GRID_MORE : ''}`
+          ),
         }
       } catch (e) {
         return { ok: false, error: String(e?.message || e) }

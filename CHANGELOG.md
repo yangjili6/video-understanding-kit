@@ -3,6 +3,16 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 版本号以 `dsh-plugin/package.json` 的 `version` 为准，根 `package.json` 与之同号。
 
+## [0.2.4] - 2026-11-07
+
+### 新增
+- **`fullReview` 参数**：控制网格阅读深度。
+  - `true`：提示词要求**逐页打开每一张网格**（准确，但 token 消耗大——实测 27 页视频会读 27 张图）
+  - `false` / 不传：只看关键页（省 token，可能漏细节）
+
+  背景：0.2.3 把提示词改成「逐页全看」后，多页视频的 token 消耗明显上升。改成可选，
+  由调用方按任务重要性决定。
+
 ## [0.2.3] - 2026-11-07
 
 ### 修复
