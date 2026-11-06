@@ -146,10 +146,8 @@ async function main() {
   // 注意：这是「允许比最快慢多少」，不是「相邻档边际收益至少多少」——方向相反。
   const TOLERANCE = Number(process.env.TOLERANCE || 0.08)
   const fastestMs = Math.min(...results.map((r) => r.ms))
+  // 参考指标：距最快档 ≤8% 的档位（偏「最快」，会放行收益已经很小的档）
   const eligible = results.filter((r) => r.ms <= fastestMs * (1 + TOLERANCE))
-  const best = eligible.reduce((a, b) => (b.ms < a.ms ? b : a))  // 同档内取最快
-  const chosen = eligible.reduce((a, b) => (a.concurrency < b.concurrency ? a : b), eligible[0])  // 满足条件的**最小** n
-  const pick = chosen
 
   // 指挥官那套逻辑：效率 = (T1/Tn)/n ≥ 40%，边际收益 = (T(n-1)-Tn)/T(n-1) ≥ 8%，
   // 两者同时满足才往上加一档。偏向「省资源和稳定」，和 1.08x 公式（偏向最快）互补。
@@ -172,6 +170,9 @@ async function main() {
 
   const times = Object.fromEntries(results.map((r) => [r.concurrency, r.ms / 1000]))
   const effRec = recommendByEfficiency(times)
+  // 主推荐用效率公式（指挥官定的规则）：效率 ≥40% ∧ 相邻档边际 ≥8%。
+  // 只看「谁最快」会把边际收益已经为负的档也选进来（实测过 4 路）。
+  const pick = results.find((r) => r.concurrency === effRec.recommended) || results[0]
 
   const summary = {
     at: new Date().toISOString(),
@@ -193,7 +194,9 @@ async function main() {
     recommendedByEfficiency: effRec.recommended,
     efficiencyDetail: effRec.detail,
     tolerance: TOLERANCE,
-    note: `建议 OCR 并发度 = ${pick.concurrency}（最快档 ${fastestMs / 1000}s，本档 ${(pick.ms / 1000).toFixed(2)}s，允许差 ${(TOLERANCE * 100).toFixed(0)}%）`,
+    note: pick.concurrency === 1
+      ? '建议 OCR 并发度 = 1（并行收益不足，保持串行）'
+      : `建议 OCR 并发度 = ${pick.concurrency}（相对 1 路 ${(serial / pick.ms).toFixed(2)}x，效率 ${(((serial / pick.ms) / pick.concurrency) * 100).toFixed(0)}%）`,
   }
 
   if (args.json) {
