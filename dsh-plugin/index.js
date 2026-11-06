@@ -502,6 +502,8 @@ function coerceConfig(raw) {
   if (!raw || typeof raw !== 'object') return out
   if (typeof raw.ocr === 'boolean') out.ocr = raw.ocr
   if (typeof raw.asr === 'boolean') out.asr = raw.asr
+  // 白名单清洗：不加这一行，面板存进来的 fullReview 会被静默丢弃
+  if (typeof raw.fullReview === 'boolean') out.fullReview = raw.fullReview
   const fps = Number(raw.baseFps)
   if (Number.isFinite(fps) && fps >= 1 && fps <= 12) out.baseFps = fps
   if (typeof raw.updatedAt === 'string') out.updatedAt = raw.updatedAt
