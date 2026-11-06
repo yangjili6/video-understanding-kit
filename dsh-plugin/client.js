@@ -356,10 +356,14 @@ window.__ModuleLoader__.load({
                 if (Number.isFinite(v) && v >= 1 && v <= 12) patch({ baseFps: v, updatedBy: 'panel' })
               },
             }),
+            savedAt
+              ? h(
+                  'span',
+                  { className: 'dvk-note', style: { marginLeft: 10, whiteSpace: 'nowrap' } },
+                  `已保存 ${new Date(savedAt).toLocaleTimeString()}`,
+                )
+              : null,
           ),
-          savedAt
-            ? h('div', { className: 'dvk-note' }, `已保存 ${new Date(savedAt).toLocaleTimeString()}，下次调用生效`)
-            : null,
           err ? h('div', { className: 'dvk-note err' }, `出错了：${err}`) : null,
           !cfg && !err ? h('div', { className: 'dvk-note' }, '正在读取配置…') : null,
         ),
