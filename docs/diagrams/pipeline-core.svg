@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="480" viewBox="0 0 860 480">
+<rect width="860" height="480" fill="#0f1419"/>
+<text x="430" y="32" font-size="17" fill="#e6edf3" font-weight="600" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">OCR 检测并发</text>
+<text x="430" y="52" font-size="11" fill="#8b98a8" font-weight="400" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">标定推荐 → 温度上限 → 实际路数</text>
+<rect x="60" y="78" width="130" height="54" rx="8" fill="#1a2029" stroke="#3a4656" stroke-width="1.5"/>
+<text x="125" y="100" font-size="13" fill="#e6edf3" font-weight="500" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">主线程</text>
+<text x="125" y="118" font-size="10" fill="#8b98a8" font-weight="400" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">PP-OCR 分片</text>
+<rect x="300" y="78" width="150" height="54" rx="8" fill="#212a36" stroke="#4a9eff" stroke-width="1.5"/>
+<text x="375" y="99" font-size="12" fill="#4a9eff" font-weight="500" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">worker 1</text>
+<text x="375" y="116" font-size="9" fill="#8b98a8" font-weight="400" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">4.5MB det 模型</text>
+<path d="M 190 105 L 245 105 L 245 105 L 300 105" fill="none" stroke="#3a4656" stroke-width="1.4"/>
+<polygon points="300,105 292,100 292,110" fill="#3a4656"/>
+<rect x="300" y="144" width="150" height="54" rx="8" fill="#212a36" stroke="#4a9eff" stroke-width="1.5"/>
+<text x="375" y="165" font-size="12" fill="#4a9eff" font-weight="500" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">worker 2</text>
+<text x="375" y="182" font-size="9" fill="#8b98a8" font-weight="400" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">4.5MB det 模型</text>
+<path d="M 190 105 L 245 105 L 245 171 L 300 171" fill="none" stroke="#3a4656" stroke-width="1.4"/>
+<polygon points="300,171 292,166 292,176" fill="#3a4656"/>
+<rect x="300" y="210" width="150" height="54" rx="8" fill="#212a36" stroke="#4a9eff" stroke-width="1.5"/>
+<text x="375" y="231" font-size="12" fill="#4a9eff" font-weight="500" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">worker 3</text>
+<text x="375" y="248" font-size="9" fill="#8b98a8" font-weight="400" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">4.5MB det 模型</text>
+<path d="M 190 105 L 245 105 L 245 237 L 300 237" fill="none" stroke="#3a4656" stroke-width="1.4"/>
+<polygon points="300,237 292,232 292,242" fill="#3a4656"/>
+<path d="M 450 105 L 505 105" fill="none" stroke="#3a4656" stroke-width="1.4"/>
+<path d="M 450 171 L 505 171" fill="none" stroke="#3a4656" stroke-width="1.4"/>
+<path d="M 450 237 L 505 237" fill="none" stroke="#3a4656" stroke-width="1.4"/>
+<path d="M 505 105 L 505 171" fill="none" stroke="#3a4656" stroke-width="1.4"/>
+<path d="M 505 171 L 505 171" fill="none" stroke="#3a4656" stroke-width="1.4"/>
+<path d="M 505 237 L 505 171" fill="none" stroke="#3a4656" stroke-width="1.4"/>
+<path d="M 505 171 L 545 171" fill="none" stroke="#3a4656" stroke-width="1.4"/>
+<polygon points="545,171 537,166 537,176" fill="#3a4656"/>
+<rect x="545" y="130" width="150" height="82" rx="8" fill="#1a2029" stroke="#3fb950" stroke-width="1.5"/>
+<text x="620" y="156" font-size="13" fill="#e6edf3" font-weight="500" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">事件合并</text>
+<text x="620" y="176" font-size="10" fill="#8b98a8" font-weight="400" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">→ 字幕时间线</text>
+<text x="620" y="196" font-size="9" fill="#8b98a8" font-weight="400" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">取最长文本帧</text>
+<text x="375" y="292" font-size="10" fill="#8b98a8" font-weight="400" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">实测 par ≈ 2.4（3 路）— 不是每个 worker 都能拿满核</text>
+<text x="430" y="350" font-size="17" fill="#f0a04b" font-weight="600" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">温度决策（优先于吞吐量）</text>
+<text x="430" y="370" font-size="10" fill="#8b98a8" font-weight="400" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">dumpsys battery → 电池温度 · 能读到时只认温度</text>
+<rect x="60" y="388" width="170" height="62" rx="6" fill="#212a36" stroke="#3fb950" stroke-width="1.5"/>
+<text x="145" y="412" font-size="12" fill="#3fb950" font-weight="600" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">＜ 38℃</text>
+<text x="145" y="434" font-size="14" fill="#e6edf3" font-weight="700" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">不限</text>
+<rect x="250" y="388" width="170" height="62" rx="6" fill="#212a36" stroke="#f0a04b" stroke-width="1.5"/>
+<text x="335" y="412" font-size="12" fill="#f0a04b" font-weight="600" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">38~40℃</text>
+<text x="335" y="434" font-size="14" fill="#e6edf3" font-weight="700" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">3 路</text>
+<rect x="440" y="388" width="170" height="62" rx="6" fill="#212a36" stroke="#d29922" stroke-width="1.5"/>
+<text x="525" y="412" font-size="12" fill="#d29922" font-weight="600" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">40~42℃</text>
+<text x="525" y="434" font-size="14" fill="#e6edf3" font-weight="700" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">2 路</text>
+<rect x="630" y="388" width="170" height="62" rx="6" fill="#212a36" stroke="#e5534b" stroke-width="1.5"/>
+<text x="715" y="412" font-size="12" fill="#e5534b" font-weight="600" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">＞ 42℃</text>
+<text x="715" y="434" font-size="14" fill="#e6edf3" font-weight="700" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">串行</text>
+</svg>
