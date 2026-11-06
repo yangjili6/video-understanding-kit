@@ -93,23 +93,38 @@ async function main() {
   console.log('[calibrate] 预热…')
   await detectSerial(picked.slice(0, 1))
 
+  // 每档重复测量取中位数：单次测量在设备状态波动下不可靠（实测差过 40%）
+  const REPS = Number(process.env.REPS || 3)
   const results = []
-  const serialMs = await detectSerial(picked)
-  results.push({ concurrency: 1, ms: serialMs })
-  console.log(`[calibrate] 1 路: ${(serialMs / 1000).toFixed(2)}s`)
+  function med(xs) { const a = [...xs].sort((x, y) => x - y); const m = Math.floor(a.length / 2); return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2 }
+
+  const serialSamples = []
+  for (let r = 0; r < REPS; r++) serialSamples.push(await detectSerial(picked))
+  const serialMs = med(serialSamples)
+  results.push({ concurrency: 1, ms: serialMs, samples: serialSamples })
+  console.log(`[calibrate] 1 路: 中位 ${(serialMs / 1000).toFixed(2)}s（样本 ${serialSamples.map((x) => (x / 1000).toFixed(2)).join('/')}）`)
 
   const upper = Math.min(args.max, topology.big)
   for (let c = 2; c <= upper; c++) {
-    const ms = await detectParallel(picked, c)
-    results.push({ concurrency: c, ms })
+    const samples = []
+    for (let r = 0; r < REPS; r++) samples.push(await detectParallel(picked, c))
+    const ms = med(samples)
+    results.push({ concurrency: c, ms, samples })
     const speedup = (serialMs / ms).toFixed(2)
-    console.log(`[calibrate] ${c} 路: ${(ms / 1000).toFixed(2)}s（${speedup}x）`)
+    const spread = ((Math.max(...samples) - Math.min(...samples)) / ms * 100).toFixed(0)
+    console.log(`[calibrate] ${c} 路: 中位 ${(ms / 1000).toFixed(2)}s（${speedup}x，极差 ${spread}%）`)
   }
 
   const serial = results[0].ms
-  // 选择：取实测最快的档位；但加速不到 10% 就不折腾（多开 worker 有内存代价）
-  const fastest = results.reduce((a, b) => (b.ms < a.ms ? b : a))
-  const best = serial / fastest.ms >= 1.10 ? fastest : results[0]
+  // 按「距最快档不超过 TOLERANCE」选最小 worker 数（GPT/霁璃 2026-11-05 建议）：
+  //   T(n) ≤ (1 + TOLERANCE) × min T(k) 的最小 n
+  // 注意：这是「允许比最快慢多少」，不是「相邻档边际收益至少多少」——方向相反。
+  const TOLERANCE = Number(process.env.TOLERANCE || 0.08)
+  const fastestMs = Math.min(...results.map((r) => r.ms))
+  const eligible = results.filter((r) => r.ms <= fastestMs * (1 + TOLERANCE))
+  const best = eligible.reduce((a, b) => (b.ms < a.ms ? b : a))  // 同档内取最快
+  const chosen = eligible.reduce((a, b) => (a.concurrency < b.concurrency ? a : b), eligible[0])  // 满足条件的**最小** n
+  const pick = chosen
 
   const summary = {
     video: args.video,
@@ -117,21 +132,25 @@ async function main() {
     topology,
     results: results.map((r) => ({
       concurrency: r.concurrency,
-      ms: r.ms,
+      medianMs: r.ms,
+      samples: r.samples,
       speedup: +(serial / r.ms).toFixed(2),
       efficiency: +((serial / r.ms) / r.concurrency).toFixed(2),
+      spreadPct: +(((Math.max(...r.samples) - Math.min(...r.samples)) / r.ms) * 100).toFixed(0),
     })),
-    recommended: best.concurrency,
-    note: `建议 OCR 并发度 = ${best.concurrency}（相对 1 路 ${(serial / best.ms).toFixed(2)}x）`,
+    fastestConcurrency: results.reduce((a, b) => (b.ms < a.ms ? b : a)).concurrency,
+    recommended: pick.concurrency,
+    tolerance: TOLERANCE,
+    note: `建议 OCR 并发度 = ${pick.concurrency}（最快档 ${fastestMs / 1000}s，本档 ${(pick.ms / 1000).toFixed(2)}s，允许差 ${(TOLERANCE * 100).toFixed(0)}%）`,
   }
 
   if (args.json) {
     console.log(JSON.stringify(summary, null, 2))
   } else {
     console.log('\n══════ 结果 ══════')
-    console.log('并发  耗时     加速   效率')
+    console.log('并发  中位耗时   加速   效率   极差')
     for (const r of summary.results) {
-      console.log(`${String(r.concurrency).padStart(3)}  ${String((r.ms / 1000).toFixed(2)).padStart(6)}s  ${String(r.speedup).padStart(5)}x  ${String((r.efficiency * 100).toFixed(0)).padStart(4)}%`)
+      console.log(`${String(r.concurrency).padStart(3)}  ${String((r.medianMs / 1000).toFixed(2)).padStart(6)}s  ${String(r.speedup).padStart(5)}x  ${String((r.efficiency * 100).toFixed(0)).padStart(4)}%  ${String(r.spreadPct).padStart(4)}%`)
     }
     console.log(`\n${summary.note}`)
   }
