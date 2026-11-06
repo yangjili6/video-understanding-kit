@@ -341,7 +341,18 @@ window.__ModuleLoader__.load({
               'div',
               { className: 'dvk-row-main' },
               h('div', { className: 'dvk-row-name' }, '基础抽帧率'),
-              h('div', { className: 'dvk-row-desc' }, '1–12 fps。越高越细，成本也越高。'),
+              h(
+                'div',
+                { className: 'dvk-row-desc' },
+                '1–12 fps。越高越细，成本也越高。',
+                savedAt
+                  ? h(
+                      'span',
+                      { className: 'dvk-note', style: { marginLeft: 12, whiteSpace: 'nowrap' } },
+                      `已保存 ${new Date(savedAt).toLocaleTimeString()}`,
+                    )
+                  : null,
+              ),
             ),
             h('input', {
               className: 'dvk-num',
@@ -356,13 +367,6 @@ window.__ModuleLoader__.load({
                 if (Number.isFinite(v) && v >= 1 && v <= 12) patch({ baseFps: v, updatedBy: 'panel' })
               },
             }),
-            savedAt
-              ? h(
-                  'span',
-                  { className: 'dvk-note', style: { marginLeft: 10, whiteSpace: 'nowrap' } },
-                  `已保存 ${new Date(savedAt).toLocaleTimeString()}`,
-                )
-              : null,
           ),
           err ? h('div', { className: 'dvk-note err' }, `出错了：${err}`) : null,
           !cfg && !err ? h('div', { className: 'dvk-note' }, '正在读取配置…') : null,
