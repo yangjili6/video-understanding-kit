@@ -367,7 +367,10 @@ window.__ModuleLoader__.load({
         h(
           'div',
           null,
-          h('div', { className: 'dvk-section-title', style: { padding: '14px 16px 0' } }, '网格阅读'),
+        h(
+          'div',
+          { className: 'dvk-section' },
+          h('div', { className: 'dvk-section-title' }, '网格阅读'),
           h(
             'div',
             { className: 'dvk-row' },
@@ -378,7 +381,7 @@ window.__ModuleLoader__.load({
               h(
                 'div',
                 { className: 'dvk-row-desc' },
-                '开：每一页网格都看，准确但 token 消耗大（27 页视频约读 27 张图）。关：只看关键页，省 token 但可能漏细节。video_analyze 显式传 fullReview 时以参数为准。',
+                '开：每一页网格都看，准确但 token 消耗大。关：只看关键页，省 token 但可能漏细节。video_analyze 显式传 fullReview 时以参数为准。',
               ),
             ),
             h(
@@ -392,6 +395,7 @@ window.__ModuleLoader__.load({
               }),
             ),
           ),
+        ),
           h('div', { className: 'dvk-section-title', style: { padding: '14px 16px 0' } }, '最近运行'),
           recent.length
             ? h(
