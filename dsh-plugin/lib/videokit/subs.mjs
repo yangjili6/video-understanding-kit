@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process'
 import { cpus } from 'node:os'
 import { Worker } from 'node:worker_threads'
 import { detectCpuTopology, computeConcurrency, detectLoad } from './lib/cpu.mjs'
-import { mkdirSync, readdirSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { detect, recognizeCrop } from './lib/ocr-pp.mjs'
 
@@ -72,8 +72,41 @@ export function selectSubtitleLine(boxes, fw = FRAME_W, fh = FRAME_W * 9 / 16) {
 const CPU_TOPOLOGY = detectCpuTopology()
 // 热时退回单路：多个 worker 抢核会把整条管线拖慢（ADR-0007 实测过）。
 // 注意：必须在 OCR 真正开始时才测负载，模块加载时 CPU 还空着。
+
+// 标定结果接入（ADR-0009）：优先用 tools/calibrate.mjs 实测的推荐值，
+// 超过 TTL 就作废——设备状态会变，陈旧标定不如拓扑兜底。
+const CALIB_TTL_MS = Number(process.env.CALIB_TTL_MS || 30 * 60 * 1000)
+const CALIB_PATHS = () => [
+  process.env.CALIBRATE_RESULT,
+  join(process.cwd(), 'tmp', 'calibrate-result.json'),
+  join(workTmpDir(), 'tmp', 'calibrate-result.json'),
+].filter(Boolean)
+
+function workTmpDir() {
+  // 和 tools/calibrate.mjs 的默认输出保持一致：仓库/工作区根的 tmp/
+  return join(new URL('..', import.meta.url).pathname, 'tmp')
+}
+
+function readCalibration() {
+  for (const p of CALIB_PATHS()) {
+    try {
+      const j = JSON.parse(readFileSync(p, 'utf8'))
+      if (!j || !Number.isFinite(j.recommended) || j.recommended < 1) continue
+      const at = j.at ? Date.parse(j.at) : NaN
+      const fresh = Number.isFinite(at) ? (Date.now() - at < CALIB_TTL_MS) : true
+      if (!fresh) continue
+      return { n: j.recommended, source: p, tolerance: j.tolerance }
+    } catch { /* 读不到就试下一个 */ }
+  }
+  return null
+}
+
 function detWorkerCount() {
   if (process.env.SUBS_DET_WORKERS) return Number(process.env.SUBS_DET_WORKERS)
+  // ① 实测标定优先（ADR-0009）
+  const calib = readCalibration()
+  if (calib) return Math.max(1, Math.min(calib.n, CPU_TOPOLOGY.big))
+  // ② 低于拓扑：热时退回单路
   const load = detectLoad(CPU_TOPOLOGY)
   const full = computeConcurrency(CPU_TOPOLOGY, 4)
   if (load.level === 'hot') return 1

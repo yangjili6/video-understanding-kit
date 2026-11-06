@@ -38,7 +38,11 @@ export function detectCpuTopology() {
   // 桌面平台 os.cpus() 正常，优先用它（拿不到 capacity 就当作全是大核）
   const fromOs = cpus()
   if (fromOs.length > 0) {
-    return { total: fromOs.length, big: fromOs.length, caps: [], source: 'os.cpus' }
+    // 桌面平台读不到 capacity，也不区分 P/E 核（比如 i9-14900HX 是 8P+16E，
+    // os.cpus() 只给出 32 个逻辑核）。按超线程折半估物理核，避免把逻辑核
+    // 当并行上限——真正的并发度应该来自 tools/calibrate.mjs 的实测。
+    const physicalHint = Math.max(1, Math.ceil(fromOs.length / 2))
+    return { total: fromOs.length, big: physicalHint, caps: [], source: 'os.cpus', note: 'PC 端不区分 P/E 核，big 取逻辑核的一半' }
   }
 
   const caps = []

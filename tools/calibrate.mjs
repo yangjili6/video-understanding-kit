@@ -127,6 +127,7 @@ async function main() {
   const pick = chosen
 
   const summary = {
+    at: new Date().toISOString(),
     video: args.video,
     frames: picked.length,
     topology,
