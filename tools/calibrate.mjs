@@ -16,7 +16,7 @@ import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Worker } from 'node:worker_threads'
-import { detectCpuTopology } from '../lib/cpu.mjs'
+import { detectCpuTopology, readBatteryTemp } from '../lib/cpu.mjs'
 import { pathToFileURL } from 'node:url'
 
 const VK_ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '')
@@ -85,6 +85,10 @@ async function waitCooldown(label) {
   void label
 }
 
+function readTempC() {
+  try { return readBatteryTemp() } catch { return null }
+}
+
 async function main() {
   const args = parseArgs()
   const topology = detectCpuTopology()
@@ -112,22 +116,25 @@ async function main() {
   const results = []
   function med(xs) { const a = [...xs].sort((x, y) => x - y); const m = Math.floor(a.length / 2); return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2 }
 
+  const t0Serial = readTempC()
   const serialSamples = []
   for (let r = 0; r < REPS; r++) {
     if (r > 0) await waitCooldown('serial')
     serialSamples.push(await detectSerial(picked))
   }
   const serialMs = med(serialSamples)
-  results.push({ concurrency: 1, ms: serialMs, samples: serialSamples })
+  results.push({ concurrency: 1, ms: serialMs, samples: serialSamples, tempC: readTempC(), tempDelta: (readTempC() ?? 0) - (t0Serial ?? 0) })
   console.log(`[calibrate] 1 路: 中位 ${(serialMs / 1000).toFixed(2)}s（样本 ${serialSamples.map((x) => (x / 1000).toFixed(2)).join('/')}）`)
 
   const upper = Math.min(args.max, topology.big)
   for (let c = 2; c <= upper; c++) {
     await waitCooldown(c)
+    const tBefore = readTempC()
     const samples = []
     for (let r = 0; r < REPS; r++) samples.push(await detectParallel(picked, c))
     const ms = med(samples)
-    results.push({ concurrency: c, ms, samples })
+    const tAfter = readTempC()
+    results.push({ concurrency: c, ms, samples, tempC: tAfter, tempDelta: (tAfter ?? 0) - (tBefore ?? 0) })
     const speedup = (serialMs / ms).toFixed(2)
     const spread = ((Math.max(...samples) - Math.min(...samples)) / ms * 100).toFixed(0)
     console.log(`[calibrate] ${c} 路: 中位 ${(ms / 1000).toFixed(2)}s（${speedup}x，极差 ${spread}%）`)
@@ -144,6 +151,28 @@ async function main() {
   const chosen = eligible.reduce((a, b) => (a.concurrency < b.concurrency ? a : b), eligible[0])  // 满足条件的**最小** n
   const pick = chosen
 
+  // 指挥官那套逻辑：效率 = (T1/Tn)/n ≥ 40%，边际收益 = (T(n-1)-Tn)/T(n-1) ≥ 8%，
+  // 两者同时满足才往上加一档。偏向「省资源和稳定」，和 1.08x 公式（偏向最快）互补。
+  function recommendByEfficiency(times, minEff = 0.40, minGain = 0.08) {
+    const base = times[1]
+    let best = 1
+    const detail = []
+    for (const n of Object.keys(times).map(Number).sort((a, b) => a - b)) {
+      if (n === 1 || !(n - 1 in times)) continue
+      const cur = times[n], prev = times[n - 1]
+      const speedup = base / cur
+      const eff = speedup / n
+      const gain = (prev - cur) / prev
+      const passed = eff >= minEff && gain >= minGain
+      detail.push({ concurrency: n, speedup: +speedup.toFixed(3), efficiency: +(eff * 100).toFixed(2), marginalGain: +(gain * 100).toFixed(2), passed })
+      if (passed) best = n
+    }
+    return { recommended: best, detail }
+  }
+
+  const times = Object.fromEntries(results.map((r) => [r.concurrency, r.ms / 1000]))
+  const effRec = recommendByEfficiency(times)
+
   const summary = {
     at: new Date().toISOString(),
     video: args.video,
@@ -156,9 +185,13 @@ async function main() {
       speedup: +(serial / r.ms).toFixed(2),
       efficiency: +((serial / r.ms) / r.concurrency).toFixed(2),
       spreadPct: +(((Math.max(...r.samples) - Math.min(...r.samples)) / r.ms) * 100).toFixed(0),
+      tempC: r.tempC,
+      tempDelta: r.tempDelta,
     })),
     fastestConcurrency: results.reduce((a, b) => (b.ms < a.ms ? b : a)).concurrency,
     recommended: pick.concurrency,
+    recommendedByEfficiency: effRec.recommended,
+    efficiencyDetail: effRec.detail,
     tolerance: TOLERANCE,
     note: `建议 OCR 并发度 = ${pick.concurrency}（最快档 ${fastestMs / 1000}s，本档 ${(pick.ms / 1000).toFixed(2)}s，允许差 ${(TOLERANCE * 100).toFixed(0)}%）`,
   }

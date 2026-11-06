@@ -103,9 +103,13 @@ function readCalibration() {
 
 function detWorkerCount() {
   if (process.env.SUBS_DET_WORKERS) return Number(process.env.SUBS_DET_WORKERS)
-  // ① 实测标定优先（ADR-0009）
+  // ① 实测标定优先（ADR-0009）+ 温度上限（温度优先于吞吐量）
   const calib = readCalibration()
-  if (calib) return Math.max(1, Math.min(calib.n, CPU_TOPOLOGY.big))
+  if (calib) {
+    const load = detectLoad(CPU_TOPOLOGY)
+    const cap = load.maxConcurrency ?? Number.POSITIVE_INFINITY
+    return Math.max(1, Math.min(calib.n, CPU_TOPOLOGY.big, cap))
+  }
   // ② 低于拓扑：热时退回单路
   const load = detectLoad(CPU_TOPOLOGY)
   const full = computeConcurrency(CPU_TOPOLOGY, 4)

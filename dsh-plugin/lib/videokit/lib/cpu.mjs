@@ -9,6 +9,7 @@
 // 并行任务该按「大核数」定并发度，而不是按总核数。
 import { cpus } from 'node:os'
 import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 
 const CAPACITY_PATH = (i) => `/sys/devices/system/cpu/cpu${i}/cpu_capacity`
 const ONLINE_PATH = '/sys/devices/system/cpu/online'
@@ -118,9 +119,58 @@ function readFreqRatio(i) {
  *   note:  给日志用的一句话
  * 分档保守——宁可判成热，也不要因为并行把整条管线拖慢。
  */
+// 电池温度（℃，读不到返回 null）。
+// thermal_zone*/temp 在这台机器上被 SELinux 挡住（连 shz 都读不到），
+// 但 dumpsys battery 能拿到 —— 它反映的是整体发热，比 CPU 核心温度钝，够用来自保。
+export function readBatteryTemp() {
+  try {
+    const out = execFileSync('shz', ['dumpsys battery'], { encoding: 'utf8', timeout: 4000 })
+    const mm = out.match(/temperature:\s*(\d+)/)
+    if (mm) return Number(mm[1]) / 10
+  } catch { /* 非 Shizuku 模式或读失败 */ }
+  return null
+}
+
+// 温度档位阈值（℃）。电池温度比 CPU 核心温度钝，所以取值偏保守：
+//   ≥ 42℃ 判 hot    → 计算型退回单路
+//   ≥ 40℃ 判 warm   → 最多 2 路
+// 实测：3 路在 37~38℃ 时 17~19s，到 39℃ 掉到 30s；4 路稳定在 39.7~41.5℃。
+// 所以阈值取 40 / 38，比原先 42 / 40 提前一档——温度优先于吞吐量。
+const TEMP_HOT = Number(process.env.CPU_TEMP_HOT || 40)
+const TEMP_WARM = Number(process.env.CPU_TEMP_WARM || 38)
+
+// 温度分级：温度优先于吞吐量（指挥官定的优先级——体验与安全 > 效率）。
+// 返回 n = 该温度下允许的最大并发数（null 表示不限）。
+const TEMP_TIERS = [
+  { max: 38, n: null, level: 'cool', label: '正常' },
+  { max: 40, n: 3, level: 'warm', label: '偏热' },
+  { max: 42, n: 2, level: 'hot', label: '过热' },
+  { max: Infinity, n: 1, level: 'hot', label: '严重过热' },
+]
+
+export function tempTierConcurrency(tempC) {
+  for (const t of TEMP_TIERS) {
+    if (tempC < t.max) {
+      return { n: t.n, level: t.level, note: `电池 ${tempC}℃ → ${t.label}` + (t.n ? `（限 ${t.n} 路）` : '') }
+    }
+  }
+  return { n: 1, level: 'hot', note: `电池 ${tempC}℃ → 严重过热（串行）` }
+}
+
 export function detectLoad(topology) {
   const t = topology || detectCpuTopology()
-  // 取大核（capacity 最高的那批）；没有 capacity 信息就试最后两个核
+
+  // ① 温度优先：能读到电池温度就先按它判，比频率更直接。
+  // 分级降档（不只看 hot/warm）：温度越高，允许的并发越低。
+  const temp = readBatteryTemp()
+  if (temp !== null) {
+    const cap = tempTierConcurrency(temp)
+    if (cap.level !== 'cool') {
+      return { level: cap.level, ratio: null, tempC: temp, maxConcurrency: cap.n, bigCores: [], note: cap.note }
+    }
+  }
+
+  // ② 取大核（capacity 最高的那批）；没有 capacity 信息就试最后两个核
   let bigIdx = []
   if (t.caps && t.caps.length) {
     const maxCap = Math.max(...t.caps)
@@ -138,7 +188,8 @@ export function detectLoad(topology) {
   return {
     level,
     ratio: Number(avg.toFixed(3)),
+    tempC: temp,
     bigCores: bigIdx,
-    note: `大核频率比 ${(avg * 100).toFixed(0)}%（${bigIdx.length} 核）`,
+    note: `大核频率比 ${(avg * 100).toFixed(0)}%（${bigIdx.length} 核）${temp !== null ? `，电池 ${temp}℃` : ''}`,
   }
 }

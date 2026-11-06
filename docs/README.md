@@ -16,6 +16,7 @@
 | [ADR-0007 OCR 并行](ADR-0007-ocr-parallel.md) | 时间全在检测不在识别、字幕带/降分辨率都不可行、分片并行 1.42x 与 cpus() 返回 0 的坑 |
 | [ADR-0008 负载感知](ADR-0008-load-aware-concurrency.md) | Android 只有 cpufreq 可读、1+3+4 拓扑、热时退回串行，以及「并行不一定更快」的实测 |
 | [ADR-0009 并发度标定](ADR-0009-concurrency-calibration.md) | 实测选档规则（T(n)≤1.08×min T 的最小 n）、本次推荐 3 路、以及「四舍五入不能参与阈值判断」的教训 |
+| [ADR-0010 温度保护](ADR-0010-thermal-protection.md) | 温度优先于吞吐量；电池温度分级降档（38/40/42℃ → 不限/3/2/1 路）；标定是冷机峰值、实际是持续负载 |
 | [交接：PC 端标定](HANDOFF-calibration-pc.md) | 给电脑上的 AI：复现标定、回答 5 个问题（并行效率/瓶颈/worker 线程数/帧数影响） |
 | [实验 2026-10-30](EXPERIMENT-2026-10-30-asr-ocr.md) | OCR 坐标 bug、OCR 预探测、ASR 分段/阈值/降噪的七组对照 |
 | [实验 2026-11-03](EXPERIMENT-2026-11-03-frame-detail.md) | 三组对照：网格够用 / 关键帧没采到 / 补抽有效但峰值错 |
