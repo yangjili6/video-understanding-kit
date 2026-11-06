@@ -82,11 +82,17 @@ function runDetWorker(frames) {
   return new Promise((resolve, reject) => {
     let settled = false
     let w
+    const t0 = Date.now()
+    let readyMs = null
     try {
       w = new Worker(new URL('./lib/ocr-det-worker.mjs', import.meta.url), { workerData: { frames } })
     } catch (e) { reject(e); return }
     const done = (fn, v) => { if (settled) return; settled = true; w.terminate().catch(() => {}); fn(v) }
-    w.once('message', (m) => (m && m.ok ? done(resolve, m.boxes) : done(reject, new Error(m?.error || 'worker 无结果'))))
+    w.on('message', (m) => {
+      if (m && m.type === 'ready') { readyMs = Date.now() - t0; return }
+      if (m && m.ok) { w.readyMs = readyMs; w.firstDetectMs = m.firstDetectMs; w.totalMs = m.totalMs; done(resolve, m.boxes) }
+      else done(reject, new Error(m?.error || 'worker 无结果'))
+    })
     w.once('error', (e) => done(reject, e))
     w.once('exit', (code) => { if (!settled && code !== 0) done(reject, new Error('worker 退出码 ' + code)) })
   })
@@ -103,7 +109,10 @@ async function detectFramesParallel(paths, concurrency = detWorkerCount()) {
   const per = Math.ceil(paths.length / concurrency)
   const chunks = []
   for (let i = 0; i < paths.length; i += per) chunks.push(paths.slice(i, i + per))
-  const parts = await Promise.all(chunks.map((c) => runDetWorker(c)))
+  const workers = chunks.map((c) => runDetWorker(c))
+  const tPar = Date.now()
+  const parts = await Promise.all(workers)
+  console.log(`  [timing] 并行检测墙钟 ${Date.now() - tPar}ms（含 worker 启动）`)
   return parts.flat()
 }
 
