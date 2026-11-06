@@ -49,4 +49,4 @@
 
 ## 图表
 
-- [OCR 并发与温度决策](diagrams/pipeline-core.svg) — 由 `tools/draw-core-svg.mjs` 生成；改数据后重跑脚本即可更新。
+- [OCR 并发与温度决策](diagrams/pipeline-core@2x.png) — 由 `tools/draw-core-svg.mjs` 生成；改数据后重跑脚本即可更新。

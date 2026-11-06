@@ -4,7 +4,7 @@
 - **影响文件**：`lib/cpu.mjs`（温度分级）、`subs.mjs`（标定值叠温度上限）、`tools/calibrate.mjs`（测温）
 - **相关**：ADR-0008（负载感知）、ADR-0009（并发度标定）
 
-![OCR 并发与温度决策](diagrams/pipeline-core.svg)
+![OCR 并发与温度决策](diagrams/pipeline-core@2x.png)
 
 ## 背景
 
