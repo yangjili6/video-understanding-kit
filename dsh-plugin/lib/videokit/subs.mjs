@@ -139,11 +139,11 @@ function detWorkerCount() {
   if (calib) {
     const load = detectLoad(CPU_TOPOLOGY)
     const cap = load.maxConcurrency ?? Number.POSITIVE_INFINITY
-    return Math.max(1, Math.min(calib.n, CPU_TOPOLOGY.big, cap))
+    return Math.max(1, Math.min(calib.n, CPU_TOPOLOGY.big, cap, DET_CAP))
   }
   // ② 低于拓扑：热时退回单路
   const load = detectLoad(CPU_TOPOLOGY)
-  const full = computeConcurrency(CPU_TOPOLOGY, 4)
+  const full = computeConcurrency(CPU_TOPOLOGY, DET_CAP)
   if (load.level === 'hot') return 1
   if (load.level === 'warm') return Math.max(1, Math.min(2, full))
   return full

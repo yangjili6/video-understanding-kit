@@ -157,7 +157,7 @@ async function main() {
   // 某一档不满足只说明该档不该选，不阻断更高档位的判定。
   // （手机端 2/3 通过、4 拒绝，两种解读恰好同解都是 3 路；PC 上 4 路边际 7.9%
   //   属噪声误杀，若按连续递进会停在 3 路，白丢 31% 吞吐。）
-  function recommendByEfficiency(times, minEff = 0.40, minGain = 0.08) {
+  function recommendByEfficiency(times, minEff = 0.40, minGain = 0.10, minAbsSave = 0.3) {
     const base = times[1]
     let best = 1
     const detail = []
@@ -167,8 +167,9 @@ async function main() {
       const speedup = base / cur
       const eff = speedup / n
       const gain = (prev - cur) / prev
-      const passed = eff >= minEff && gain >= minGain
-      detail.push({ concurrency: n, speedup: +speedup.toFixed(3), efficiency: +(eff * 100).toFixed(2), marginalGain: +(gain * 100).toFixed(2), passed })
+      const absSave = prev - cur  // 绝对节省（秒）；百分比在噪声里翻面时，这条更稳
+      const passed = eff >= minEff && gain >= minGain && absSave >= minAbsSave
+      detail.push({ concurrency: n, speedup: +speedup.toFixed(3), efficiency: +(eff * 100).toFixed(2), marginalGain: +(gain * 100).toFixed(2), absSave: +absSave.toFixed(2), passed })
       if (passed) best = n   // 覆盖而非 break：取满足条件的最大 n
     }
     return { recommended: best, detail }
