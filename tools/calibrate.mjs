@@ -13,13 +13,15 @@
 //   node tools/calibrate.mjs --json              # 输出 JSON（给脚本消费）
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Worker } from 'node:worker_threads'
 import { detectCpuTopology, readBatteryTemp } from '../lib/cpu.mjs'
-import { pathToFileURL } from 'node:url'
+import { pathToFileURL, fileURLToPath } from 'node:url'
 
-const VK_ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '')
+// 用 fileURLToPath 而不是 URL.pathname：后者在 Windows 上会留下 /D:/ 前缀
+// 且把空格/中文 percent-encode 成 %20/%E5%B7%A5，路径不可用。
+const VK_ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
 const VK_DIR = process.env.VK_DIR || join('/storage/emulated/0/Documents/dsh-work/dsh-video-kit/lib/videokit')  // 装了 node_modules 的那份
 const DEFAULT_VIDEO = '/storage/emulated/0/Documents/dsh-work/test-media/BV1B1xR6nEi4.mp4'
 const PROBE_FRAMES = Number(process.env.PROBE_FRAMES || 24)
@@ -149,8 +151,12 @@ async function main() {
   // 参考指标：距最快档 ≤8% 的档位（偏「最快」，会放行收益已经很小的档）
   const eligible = results.filter((r) => r.ms <= fastestMs * (1 + TOLERANCE))
 
-  // 指挥官那套逻辑：效率 = (T1/Tn)/n ≥ 40%，边际收益 = (T(n-1)-Tn)/T(n-1) ≥ 8%，
-  // 两者同时满足才往上加一档。偏向「省资源和稳定」，和 1.08x 公式（偏向最快）互补。
+  // 选档公式（ADR-0009）：N* = max{ n | Eₙ ≥ 40% ∧ Gₙ ≥ 8% }，
+  //   Eₙ = (T₁/Tₙ)/n 是并行效率，Gₙ = (Tₙ₋₁−Tₙ)/Tₙ₋₁ 是相邻档的边际收益。
+  // 语义是「在满足条件的档位里取最大的 n」，**不是**连续递进：
+  // 某一档不满足只说明该档不该选，不阻断更高档位的判定。
+  // （手机端 2/3 通过、4 拒绝，两种解读恰好同解都是 3 路；PC 上 4 路边际 7.9%
+  //   属噪声误杀，若按连续递进会停在 3 路，白丢 31% 吞吐。）
   function recommendByEfficiency(times, minEff = 0.40, minGain = 0.08) {
     const base = times[1]
     let best = 1
@@ -163,7 +169,7 @@ async function main() {
       const gain = (prev - cur) / prev
       const passed = eff >= minEff && gain >= minGain
       detail.push({ concurrency: n, speedup: +speedup.toFixed(3), efficiency: +(eff * 100).toFixed(2), marginalGain: +(gain * 100).toFixed(2), passed })
-      if (passed) best = n
+      if (passed) best = n   // 覆盖而非 break：取满足条件的最大 n
     }
     return { recommended: best, detail }
   }
@@ -210,8 +216,12 @@ async function main() {
     console.log(`\n${summary.note}`)
   }
 
-  writeFileSync('/storage/emulated/0/Documents/dsh-work/tmp/calibrate-result.json', JSON.stringify(summary, null, 2))
-  console.log('结果已存 tmp/calibrate-result.json')
+  // 默认写到仓库自己的 tmp/：subs.mjs 的 CALIB_PATHS 会找同一个位置，
+  // 两边不靠环境变量也能对上。手机端仍可用 CALIB_OUT 覆盖成原路径。
+  const OUT = process.env.CALIB_OUT || join(VK_ROOT, 'tmp', 'calibrate-result.json')
+  mkdirSync(dirname(OUT), { recursive: true })
+  writeFileSync(OUT, JSON.stringify(summary, null, 2))
+  console.log(`结果已存 ${OUT}`)
 
   rmSync(dir, { recursive: true, force: true })
 }

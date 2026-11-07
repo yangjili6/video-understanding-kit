@@ -4,7 +4,8 @@ import { cpus } from 'node:os'
 import { Worker } from 'node:worker_threads'
 import { detectCpuTopology, computeConcurrency, detectLoad } from './lib/cpu.mjs'
 import { mkdirSync, readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { detect, recognizeCrop } from './lib/ocr-pp.mjs'
 
 const run = (c, a, o = {}) => execFileSync(c, a, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], ...o })
@@ -103,22 +104,25 @@ const CALIB_TTL_MS = Number(process.env.CALIB_TTL_MS || 30 * 60 * 1000)
 const CALIB_PATHS = () => [
   process.env.CALIBRATE_RESULT,
   join(process.cwd(), 'tmp', 'calibrate-result.json'),
-  join(workTmpDir(), 'tmp', 'calibrate-result.json'),
+  // 和 tools/calibrate.mjs 的默认输出对齐：真源在仓库根时是 <仓库>/tmp；
+  // 副本在插件里时是插件内 lib/videokit/tmp（也正是 runPipeline 的 cwd）。
+  join(dirname(fileURLToPath(import.meta.url)), 'tmp', 'calibrate-result.json'),
+  // 兼容旧版 calibrate 的默认输出（它写在 <仓库> 的上一级 /tmp）
+  join(dirname(fileURLToPath(import.meta.url)), '..', 'tmp', 'calibrate-result.json'),
 ].filter(Boolean)
-
-function workTmpDir() {
-  // 和 tools/calibrate.mjs 的默认输出保持一致：仓库/工作区根的 tmp/
-  return join(new URL('..', import.meta.url).pathname, 'tmp')
-}
 
 function readCalibration() {
   for (const p of CALIB_PATHS()) {
     try {
-      const j = JSON.parse(readFileSync(p, 'utf8'))
+      // strip BOM：JSON.parse 遇到 U+FEFF 会直接抛错，而带 BOM 的 UTF-8 是
+      // Windows 编辑器/PowerShell Set-Content 的默认产物，不处理就静默跳过标定。
+      const j = JSON.parse(readFileSync(p, 'utf8').replace(/^\uFEFF/, ''))
       if (!j || !Number.isFinite(j.recommended) || j.recommended < 1) continue
+      // 没有 at 的旧文件一律作废：TTL 的前提是「知道它有多新」。
+      // 2026-11-07 踩过：11-06 那份旧格式文件没有 at，被判为永不过期，
+      // 管线照样读了 recommended=9 —— 与 TTL 30 分钟的设计意图正好相反。
       const at = j.at ? Date.parse(j.at) : NaN
-      const fresh = Number.isFinite(at) ? (Date.now() - at < CALIB_TTL_MS) : true
-      if (!fresh) continue
+      if (!Number.isFinite(at) || Date.now() - at >= CALIB_TTL_MS) continue
       return { n: j.recommended, source: p, tolerance: j.tolerance }
     } catch { /* 读不到就试下一个 */ }
   }
