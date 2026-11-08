@@ -122,6 +122,8 @@ async function main() {
   function med(xs) { const a = [...xs].sort((x, y) => x - y); const m = Math.floor(a.length / 2); return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2 }
 
   const t0Serial = readTempC()
+  const upper = Math.min(args.max, topology.big)
+
   // 进度：1 路 REPS 次 + (upper-1) 个并行档 × REPS 次
   const TOTAL_STEPS = REPS + Math.max(0, upper - 1) * REPS
   let doneSteps = 0
@@ -140,7 +142,7 @@ async function main() {
   results.push({ concurrency: 1, ms: serialMs, samples: serialSamples, tempC: readTempC(), tempDelta: (readTempC() ?? 0) - (t0Serial ?? 0) })
   console.log(`[calibrate] 1 路: 中位 ${(serialMs / 1000).toFixed(2)}s（样本 ${serialSamples.map((x) => (x / 1000).toFixed(2)).join('/')}）`)
 
-  const upper = Math.min(args.max, topology.big)
+
   for (let c = 2; c <= upper; c++) {
     await waitCooldown(c)
     const tBefore = readTempC()
