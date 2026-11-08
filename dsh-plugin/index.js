@@ -1139,6 +1139,7 @@ export function apply(ctx) {
           groupsDetail: groups.slice(0, 40),
           // subsCount 只统计 PP-OCR 硬字幕；asrCount 是语音台词条数。两者互不代表。
           subsCount: subs.length,
+          screenTextCount: (idx.screenText || []).length,
           asrEnabled: Boolean(idx.asr?.enabled ?? asrOn),
           asrCount: asrCues.length,
           // ADR-0011：不再一次交付全部字幕/台词。字按页取（video_look），
@@ -1219,6 +1220,7 @@ export function apply(ctx) {
         const from = ts.length ? Math.min.apply(null, ts) : 0
         const to = ts.length ? Math.max.apply(null, ts) : 0
         const subsIn = (idx.subs || []).filter((x) => Number(x.end) >= from - 0.5 && Number(x.start) <= to + 0.5)
+        const screenIn = (idx.screenText || []).filter((x) => Number(x.t) >= from - 1 && Number(x.t) <= to + 1)
         const asrIn = ((idx.asr && idx.asr.cues) ? idx.asr.cues : []).filter((c) => Number(c.e) >= from - 0.5 && Number(c.s) <= to + 0.5)
         // 去重状态：这页是代表页还是被标记去重的页
         const dd = idx.dedup || null
@@ -1250,6 +1252,7 @@ export function apply(ctx) {
           gridPath: pg.file,
           t: [Number(from.toFixed(2)), Number(to.toFixed(2))],
           subs: subsIn.map((x) => ({ start: x.start, end: x.end, text: x.text })),
+          screenText: screenIn.map((x) => ({ t: x.t, text: x.text })),
           asr: asrIn.map((c) => ({ s: Number(c.s), e: Number(c.e), text: c.text })),
           openedCount: led.opened.length,
           dedup: dd ? {

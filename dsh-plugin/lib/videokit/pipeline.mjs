@@ -752,6 +752,8 @@ async function main() {
         ? cues.map((c) => ({ id: c.id, s: Number(c.s.toFixed(2)), e: Number(c.e.toFixed(2)), text: c.text }))
         : [],
     },
+    // 画面文字（气泡/招牌）：不属于字幕时间轴，单独一列（ADR-0013）
+    screenText: (subs.screenText || []).map((x) => ({ t: x.t, text: x.text, conf: x.conf })),
     subs: subs.map((x) => ({
       start: x.start, end: x.end, t: x.t, text: x.text, conf: x.conf,
       review: (x.conf < 0.85 || /[0-9]/.test(x.text) || x.text.length < 3) ? [x.conf < 0.85 ? 'low_conf' : null, /[0-9]/.test(x.text) ? 'digits' : null, x.text.length < 3 ? 'short' : null].filter(Boolean) : null,

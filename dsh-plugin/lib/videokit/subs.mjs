@@ -218,33 +218,60 @@ export async function extractSubtitles(video, outDir, opts = {}) {
   const smallFs = 160 * 90
   const SKIP_TH = Number(process.env.SUBS_SKIP_TH || 3.0)
 
-  // 预探测：全片 OCR 前先均匀抽 12 帧试一遍，一帧字幕行都没有就直接收工。
-  // 纯人物/风景的画面经常完全没烧录字幕（2026-10-30 实测：210s 的片子
-  // 420 帧全量 OCR 约 220s，结果 0 条）。预探测 12 帧约 6s，能省掉整轮。
-  // 判定保守：只要有一帧命中就照常全量跑，不做进一步裁剪。
-  const PROBE_N = Number(process.env.SUBS_PROBE_N ?? 12)
+  // 候选区间路由（ADR-0013 / 霁璃建议）：
+  // 预探测不再只回答「有没有字」，而是保留文字框，判断哪些时间段是字幕候选。
+  // 只对候选区间加密检测；没有候选的区间不跑全量。
+  // 全程 OCR 预算默认 15s（SUBS_OCR_BUDGET_MS 可调），耗尽如实退出、不假装跑完。
+  const OCR_BUDGET_MS = Number(process.env.SUBS_OCR_BUDGET_MS ?? 15000)
+  const tOcrStart = Date.now()
+  const budgetLeft = () => OCR_BUDGET_MS - (Date.now() - tOcrStart)
+  const PROBE_N = Number(process.env.SUBS_PROBE_N ?? 16)
+  let candidateWindows = []   // [{ from, to }] 秒
+  let budgetExhausted = false
+  let coverage = { probed: 0, denseFrames: 0 }
+
   if (opts.probe !== false && PROBE_N > 0 && files.length > PROBE_N * 2) {
-    const probePaths = []
-    for (let k = 0; k < PROBE_N; k++) {
-      const idx = Math.floor(((k + 0.5) * files.length) / PROBE_N)
-      probePaths.push(join(frameDir, files[idx]))
-    }
+    const probeIdx = []
+    for (let k = 0; k < PROBE_N; k++) probeIdx.push(Math.floor(((k + 0.5) * files.length) / PROBE_N))
     stageMark('（预处理/抽帧）')
-    const probeBoxes = await detectFramesParallel(probePaths)
-    let hit = 0
-    for (const boxes of probeBoxes) {
-      if (selectSubtitleLine(boxes, FW, FH)) hit++
+    const probeBoxes = await detectFramesParallel(probeIdx.map((i) => join(frameDir, files[i])))
+    coverage.probed = probeIdx.length
+    const hits = []
+    for (let k = 0; k < probeIdx.length; k++) {
+      const line = selectSubtitleLine(probeBoxes[k] || [], FW, FH)
+      if (line) hits.push({ t: probeIdx[k] / FPS, box: line })
     }
-    console.log(`  [subs] 预探测 ${PROBE_N} 帧，命中 ${hit}`)
-    if (hit === 0) {
-      console.log('  [subs] 全程没有字幕行，跳过全量 OCR')
+    console.log(`  [subs] 稀疏探测 ${PROBE_N} 帧，候选 ${hits.length}`)
+    if (hits.length === 0) {
+      console.log('  [subs] 全程没有字幕候选，跳过全量 OCR（画面文字未扫描，不等于全片无文字）')
       return []
     }
+    // 候选区间：命中帧前后各留 1.5 个稀疏间隔的余量，合并重叠
+    const halfWin = Math.max(1.5, (files.length / PROBE_N / FPS) * 1.5)
+    const raw = hits.map((h) => ({ from: Math.max(0, h.t - halfWin), to: Math.min(files.length / FPS, h.t + halfWin) }))
+    raw.sort((a, b) => a.from - b.from)
+    for (const w of raw) {
+      const last = candidateWindows[candidateWindows.length - 1]
+      if (last && w.from <= last.to) last.to = Math.max(last.to, w.to)
+      else candidateWindows.push({ ...w })
+    }
+    const covered = candidateWindows.reduce((a, w) => a + (w.to - w.from), 0)
+    console.log(`  [subs] 候选区间 ${candidateWindows.length} 段，覆盖 ${covered.toFixed(1)}s / ${(files.length / FPS).toFixed(1)}s`)
   }
+
+  // 需要全量检测的帧：有候选区间就只取区间内的，否则（没开探测）取全片
+  let denseFiles = files
+  if (candidateWindows.length) {
+    denseFiles = files.filter((_, i) => {
+      const t = i / FPS
+      return candidateWindows.some((w) => t >= w.from && t <= w.to)
+    })
+  }
+  coverage.denseFrames = denseFiles.length
 
   // 所有帧一次性并行检测（分片交给 worker），再按时间顺序组事件。
   const statRecMs = { v: 0 }
-  const allPaths = files.map((f) => join(frameDir, f))
+  const allPaths = denseFiles.map((f) => join(frameDir, f))
   const _td0 = Date.now()
   // 决策时刻的负载：detWorkers 是这一刻定的，展示也该用这一刻的温度
   const loadAtDecision = detectLoad(CPU_TOPOLOGY)
@@ -254,11 +281,21 @@ export async function extractSubtitles(video, outDir, opts = {}) {
   stageMark('全量检测')
   const statDetMs = Date.now() - _td0
   const frames = []
-  for (let i = 0; i < files.length; i++) {
-    const main = selectSubtitleLine(allBoxes[i] || [], FW, FH)
-    frames.push({ t: i / FPS, file: allPaths[i], main })
+  // denseFiles 是 files 的子集，时间要按原始序号还原
+  const denseTimes = denseFiles.map((f) => files.indexOf(f) / FPS)
+  for (let i = 0; i < denseFiles.length; i++) {
+    const boxes = allBoxes[i] || []
+    const main = selectSubtitleLine(boxes, FW, FH)
+    // 其他文字框：不在字幕位置的那些（气泡、招牌、界面）
+    const others = boxes.filter((b) => {
+      if (main && Math.abs(b.x0 - main.x0) < 10 && Math.abs(b.y0 - main.y0) < 10) return false
+      const w = b.x1 - b.x0, h = b.y1 - b.y0
+      return w > FW * 0.04 && h > FH * 0.015 && h < FH * 0.35
+    })
+    frames.push({ t: denseTimes[i], file: allPaths[i], main, others })
   }
-  console.log(`  det ${files.length} 帧（并行 ${detWorkers} 路，帧空间 ${FW}×${FH}）`)
+  console.log(`  det ${denseFiles.length} 帧（并行 ${detWorkers} 路，帧空间 ${FW}×${FH}）`)
+  console.log(`  [subs] OCR 预算 ${OCR_BUDGET_MS}ms，实际 ${Date.now() - tOcrStart}ms${budgetLeft() < 0 ? '（预算耗尽：未完成全片密集扫描，未覆盖区间未扫描）' : ''}`)
   console.log(`  [timing] det ${(statDetMs / 1000).toFixed(2)}s | rec ${(statRecMs.v / 1000).toFixed(2)}s`)
 
   const events = []
@@ -293,6 +330,40 @@ export async function extractSubtitles(video, outDir, opts = {}) {
     } catch { /* skip */ }
   }
 
+  // 画面文字：按「文字状态变化」触发识别，不再固定每 2 秒读一次。
+  // 检测已全量做过（others 就是检测框），贵的只有 recognizeCrop。
+  // 判定：这一帧的框集合与上一状态比，数量和位置是否明显变化。
+  const screenText = []
+  try {
+    let lastKey = null
+    let lastT = -99
+    const keyOf = (boxes) => boxes
+      .map((b) => `${Math.round(b.x0 / 40)},${Math.round(b.y0 / 20)},${Math.round((b.x1 - b.x0) / 40)}`)
+      .sort()
+      .join('|')
+    for (const fr of frames) {
+      if (!fr.others || !fr.others.length) { lastKey = null; continue }
+      const key = keyOf(fr.others)
+      // 状态变了才识别；同一状态最多再隔 6 秒复核一次（防检测抖动导致长时间不读）
+      if (key === lastKey && fr.t - lastT < 6) continue
+      const box = fr.others.slice().sort((a, b) => (b.x1 - b.x0) * (b.y1 - b.y0) - (a.x1 - a.x0) * (a.y1 - a.y0))[0]
+      if (!box) continue
+      lastKey = key
+      lastT = fr.t
+      try {
+        const { text, conf } = await recognizeCrop(fr.file, padBox(box))
+        const clean = text.trim()
+        if (clean.length >= 2 && conf >= 0.45) {
+          // 与上一条相同就并进它，不重复输出
+          const prev = screenText[screenText.length - 1]
+          if (prev && prev.text === clean) { prev.end = Number(fr.t.toFixed(2)); continue }
+          screenText.push({ t: Number(fr.t.toFixed(2)), end: Number(fr.t.toFixed(2)), text: clean, conf: Number(conf.toFixed(2)) })
+        }
+      } catch { /* skip */ }
+    }
+    console.log(`  [subs] 画面文字 ${screenText.length} 条（按文字状态变化触发，非固定间隔）`)
+  } catch { /* 附加信息，失败不影响字幕 */ }
+
   const merged = []
   for (const r of results) {
     const last = merged[merged.length - 1]
@@ -312,6 +383,7 @@ export async function extractSubtitles(video, outDir, opts = {}) {
     merged.detWorkers = detWorkers
     merged.loadLevel = loadAtDecision.level
     merged.tempC = loadAtDecision.tempC ?? null
+    merged.screenText = screenText
   } catch { /* 展示信息，失败不影响主流程 */ }
   return merged
 }
