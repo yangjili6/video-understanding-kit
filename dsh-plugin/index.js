@@ -1144,11 +1144,11 @@ export function apply(ctx) {
           // ADR-0011：不再一次交付全部字幕/台词。字按页取（video_look），
           // 图和字在同一个返回里，避免「字幕够用就不看图」。
           taskId: basename(outDir),
-          totalPages: gridFiles.length,
+          totalPages: (idx.groups || []).reduce((n, g) => n + (g.pages || []).length, 0),
           outDir,
           gridsDir,
           // 前 12 页覆盖整条时间线；要看某一段的细节再按 gridsDir 取其余页
-          grids: gridFiles.slice(0, 3),
+          grids: gridFiles.filter((f) => !/-sheet-\d+\.jpg$/.test(f)).slice(0, 3),
           gridsCount: gridFiles.length,
           indexJson: indexPath,
           // 分段耗时（秒）：TransNet / ASR / 补帧 / 分页各占多少，用于定位下一次该压哪里
@@ -1157,15 +1157,15 @@ export function apply(ctx) {
           loadLevel: idx.loadLevel ?? null,
           tempC: Number.isFinite(idx.tempC) ? idx.tempC : null,
           elapsedMs: Date.now() - t0,
-          nextStep: `${(args.fullReview ?? readFullReviewDefault()) === true ? GRID_RULE : GRID_RULE_LITE}` + (
-            subs.length > 0
-              ? ` subs/asr 只是台词，不能代替画面。硬字幕已给出（含时间戳），需要更细的帧再用 video_frame。${gridFiles.length > 12 ? GRID_MORE : ''}`
-              : asrCues.length > 0
-                ? ` asr 只是台词，不能代替画面——只凭台词说画面会导致误判。${gridFiles.length > 12 ? GRID_MORE : ''}`
-                : asrOn
-                  ? ` 本片没有字幕也没有台词（可能纯音乐/环境音）。需要更细的帧再用 video_frame。${gridFiles.length > 12 ? GRID_MORE : ''}`
-                  : ` 本次未开启 ASR，也没有硬字幕；有配音的话可重跑并传 asr:true。${gridFiles.length > 12 ? GRID_MORE : ''}`
-          ),
+          nextStep: (() => {
+            const parts = ['**看图说话前必须先用 video_look 逐页看网格**：一页一次，图和该页的字幕在同一个返回里。']
+            parts.push(`本次共 ${(idx.groups || []).reduce((n, g) => n + (g.pages || []).length, 0)} 页（taskId: ${basename(outDir)}）。`)
+            parts.push('只看前几页不准下全片结论——video_report 会检查你实际看过的页数，证据不足会直接拒绝。')
+            if (subs.length === 0 && asrCues.length === 0) parts.push('本片没有硬字幕也没有台词，画面就是全部信息。')
+            else parts.push('subs/asr 只是台词，不能代替画面。需要更细的帧再用 video_frame。')
+            if ((args.fullReview ?? readFullReviewDefault()) === true) parts.push('（逐页全看模式已开启）')
+            return parts.join(' ')
+          })(),
         }
       } catch (e) {
         return { ok: false, error: String(e?.message || e) }
