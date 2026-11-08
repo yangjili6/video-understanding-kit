@@ -162,6 +162,17 @@ window.__ModuleLoader__.load({
           }
         })()
         // 模型下载可能持续几分钟：每 2 秒刷新一次资源状态，面板才能显示进度与「删除」
+        // 标定进行中：每 1.5 秒问一次进度
+        const calibTimer = setInterval(async () => {
+          try {
+            const st = await apiCall('/calibration-status')
+            if (alive && st && st.progress) setCalibProgress(st.progress)
+            if (alive && st && st.progress && !st.progress.running && st.calibrated) {
+              const c3 = await apiCall('/config')
+              if (alive) setCfg(c3.config)
+            }
+          } catch { /* 忽略 */ }
+        }, 1500)
         const timer = setInterval(async () => {
           try {
             const a = await apiCall('/assets')
@@ -267,6 +278,7 @@ window.__ModuleLoader__.load({
       const fullReviewOn = !!(cfg && cfg.fullReview)
       const ocrAccelOn = !!(cfg && cfg.ocrAccel)
       const calib = cfg && cfg.calibration
+      const [calibProgress, setCalibProgress] = React.useState(null)
 
       return h(
         'div',
@@ -424,6 +436,27 @@ window.__ModuleLoader__.load({
               }),
             ),
           ),
+          calibProgress && calibProgress.running
+            ? h(
+                'div',
+                { className: 'dvk-note', style: { padding: '6px 0 10px' } },
+                h('div', { style: { marginBottom: 6 } },
+                  `正在标定 ${calibProgress.done}/${calibProgress.total || '?'} 档……（首次约 1~2 分钟）`),
+                h('div', {
+                  style: {
+                    height: 6, borderRadius: 3, background: 'rgba(255,255,255,0.12)',
+                    overflow: 'hidden',
+                  },
+                }, h('div', {
+                  style: {
+                    height: '100%',
+                    width: (calibProgress.total ? Math.round((calibProgress.done / calibProgress.total) * 100) : 5) + '%',
+                    background: 'linear-gradient(90deg,#4a9eff,#3fb950)',
+                    transition: 'width .3s ease',
+                  },
+                })),
+              )
+            : null,
           err ? h('div', { className: 'dvk-note err' }, `出错了：${err}`) : null,
         ),
 

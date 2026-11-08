@@ -504,6 +504,9 @@ function sameDevice(a, b) {
   return a.platform === b.platform && a.total === b.total && a.big === b.big
 }
 
+// 面板轮询这个对象画进度条
+const calibProgress = { running: false, done: 0, total: 0, startedAt: null, error: null }
+
 async function runCalibrationNow() {
   const script = resolve(CALIB_SCRIPT)
   if (!existsSync(script)) throw new Error(`找不到标定脚本：${script}`)
@@ -512,16 +515,28 @@ async function runCalibrationNow() {
     const child = spawn(process.execPath, [script, '--max', '16', '--frames', '48'], {
       cwd: dirname(script),
       env: { ...process.env, REPS: process.env.REPS || '3' },
-      stdio: 'ignore',
+      stdio: ['ignore', 'pipe', 'pipe'],
     })
+    calibProgress.running = true
+    calibProgress.done = 0
+    calibProgress.total = 0
+    calibProgress.startedAt = Date.now()
+    calibProgress.error = null
+    child.stdout.on('data', (buf) => {
+      const m = String(buf).match(/\[progress\] (\d+)\/(\d+)/)
+      if (m) { calibProgress.done = Number(m[1]); calibProgress.total = Number(m[2]) }
+    })
+    child.stderr.on('data', () => { /* 标定脚本的错误走退出码判定 */ })
     const timer = setTimeout(() => { try { child.kill('SIGKILL') } catch {} ; reject(new Error('标定超时（10 分钟）')) }, 10 * 60 * 1000)
     child.on('error', (e) => { clearTimeout(timer); reject(e) })
     child.on('close', (code) => {
       clearTimeout(timer)
+      calibProgress.running = false
       if (code === 0) resolvePromise()
-      else reject(new Error('标定脚本退出码 ' + code))
+      else { calibProgress.error = '退出码 ' + code; reject(new Error('标定脚本退出码 ' + code)) }
     })
   })
+  calibProgress.running = false
   const raw = readFileSync(outFile, 'utf8').replace(/^\uFEFF/, '')
   const j = JSON.parse(raw)
   return {
@@ -1241,7 +1256,7 @@ export function apply(ctx) {
               const fp = deviceFingerprint()
               const c = cfg.calibration
               const fresh = !!c && sameDevice(c.device, fp)
-              return sendJson(res, 200, { ok: true, calibrated: fresh, calibration: c, device: fp })
+              return sendJson(res, 200, { ok: true, calibrated: fresh, calibration: c, device: fp, progress: { ...calibProgress } })
             }
 
             if (rest === 'recent' && method === 'GET') {

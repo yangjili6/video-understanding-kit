@@ -119,10 +119,19 @@ async function main() {
   function med(xs) { const a = [...xs].sort((x, y) => x - y); const m = Math.floor(a.length / 2); return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2 }
 
   const t0Serial = readTempC()
+  // 进度：1 路 REPS 次 + (upper-1) 个并行档 × REPS 次
+  const TOTAL_STEPS = REPS + Math.max(0, upper - 1) * REPS
+  let doneSteps = 0
+  const tick = (label) => {
+    doneSteps++
+    console.log(`[progress] ${doneSteps}/${TOTAL_STEPS} ${label}`)
+  }
+
   const serialSamples = []
   for (let r = 0; r < REPS; r++) {
     if (r > 0) await waitCooldown('serial')
     serialSamples.push(await detectSerial(picked))
+    tick('1 路')
   }
   const serialMs = med(serialSamples)
   results.push({ concurrency: 1, ms: serialMs, samples: serialSamples, tempC: readTempC(), tempDelta: (readTempC() ?? 0) - (t0Serial ?? 0) })
@@ -133,7 +142,10 @@ async function main() {
     await waitCooldown(c)
     const tBefore = readTempC()
     const samples = []
-    for (let r = 0; r < REPS; r++) samples.push(await detectParallel(picked, c))
+    for (let r = 0; r < REPS; r++) {
+      samples.push(await detectParallel(picked, c))
+      tick(c + ' 路')
+    }
     const ms = med(samples)
     const tAfter = readTempC()
     results.push({ concurrency: c, ms, samples, tempC: tAfter, tempDelta: (tAfter ?? 0) - (tBefore ?? 0) })
