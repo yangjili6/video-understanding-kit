@@ -78,37 +78,50 @@ export function dedupPages(pages, opts = {}) {
   const kept = [], dropped = []
   if (!pages.length) return { kept, dropped, stats: { total: 0, kept: 0, dropped: 0 } }
 
-  let prevHash = null
-  let prevRegions = null
+  // 代表页 = 上一个被判定「保留」的页。
+  // 被去重的页不更新它，后续页继续与同一个代表页比较 —— 否则会串成链（A≈B、B≈C ⇒ A≈C），
+  // 缓慢变化（镜头慢慢推近、表情渐变）就会被整段吞掉。
+  let repIndex = 0
+  let repHash = phash(pages[0].file)
+  let repRegions = regionHashes(pages[0].file)
   kept.push({ ...pages[0], dedupReason: 'first' })
-  prevHash = phash(pages[0].file)
-  prevRegions = regionHashes(pages[0].file)
 
   for (let i = 1; i < pages.length; i++) {
     const p = pages[i]
-    let hash = null, action = 'keep', reason = ''
+    let hash = null
+    let action = 'keep'
+    let reason = ''
     try {
       hash = phash(p.file)
-      const d = hamming(prevHash, hash)
+      const d = hamming(repHash, hash)
       if (d > globalSim) {
-        reason = `全图差异 ${d}`
+        reason = `全图差异 ${d}（对比代表页 ${pages[repIndex].page}）`
       } else {
         const regions = regionHashes(p.file)
         let maxRoi = -1, hot = ''
         for (const k of Object.keys(regions)) {
-          if (!regions[k] || !prevRegions?.[k]) continue
-          const rd = hamming(regions[k], prevRegions[k])
+          if (!regions[k] || !repRegions?.[k]) continue
+          const rd = hamming(regions[k], repRegions[k])
           if (rd > maxRoi) { maxRoi = rd; hot = k }
         }
-        if (maxRoi > roiChange) { reason = `局部 ${hot} 变化 ${maxRoi}` }
-        else { action = 'dedup'; reason = `全图 ${d}, 局部最大 ${maxRoi}` }
-        prevRegions = regions
+        if (maxRoi > roiChange) {
+          reason = `局部 ${hot} 变化 ${maxRoi}（对比代表页 ${pages[repIndex].page}）`
+        } else {
+          action = 'dedup'
+          reason = `全图 ${d}, 局部最大 ${maxRoi}（对比代表页 ${pages[repIndex].page}）`
+        }
       }
     } catch (e) {
-      action = 'keep'; reason = '检测失败，按不确定保留'
+      // 检测失败 → 按「不确定就保留」处理，并让它成为新代表页
+      action = 'keep'
+      reason = '检测失败，按不确定保留'
     }
-    if (action === 'keep') { kept.push({ ...p, dedupReason: reason }); if (hash) prevHash = hash }
-    else dropped.push({ ...p, dedupReason: reason })
+    if (action === 'keep') {
+      kept.push({ ...p, dedupReason: reason })
+      if (hash) { repHash = hash; repIndex = i; repRegions = regionHashes(p.file) }
+    } else {
+      dropped.push({ ...p, dedupReason: reason, representativePage: pages[repIndex].page })
+    }
   }
   return {
     kept,
