@@ -182,6 +182,13 @@ async function main() {
     tick('1 路')
   }
   const serialMs = med(serialSamples)
+  // ③ 1 路是所有比例的分母，测歪了整张表的效率都跟着歪
+  const serialSpread = serialSamples.length > 1
+    ? (Math.max(...serialSamples) - Math.min(...serialSamples)) / serialMs
+    : 0
+  if (serialSpread > 0.30) {
+    console.warn(`[calibrate] 警告：1 路极差 ${(serialSpread * 100).toFixed(0)}%（>30%），效率基准不可靠，建议 REPS=5 重测`)
+  }
   results.push({ concurrency: 1, ms: serialMs, samples: serialSamples, tempC: readTempC(), tempDelta: (readTempC() ?? 0) - (t0Serial ?? 0) })
   console.log(`[calibrate] 1 路: 中位 ${(serialMs / 1000).toFixed(2)}s（样本 ${serialSamples.map((x) => (x / 1000).toFixed(2)).join('/')}）`)
 
@@ -219,10 +226,16 @@ async function main() {
   //   属噪声误杀，若按连续递进会停在 3 路，白丢 31% 吞吐。）
   function recommendByEfficiency(times, minEff = MIN_EFF, minGain = MIN_GAIN, minAbsSave = MIN_ABS_SAVE) {
     const base = times[1]
+    // 1 路是所有比例的分母：缺了算不出效率，直接报错而不是静默推荐 1 路
+    if (!Number.isFinite(base) || base <= 0) {
+      throw new Error('标定结果缺 1 路基准（times[1]），无法计算效率；请确认 1 路档跑成功')
+    }
     let best = 1
     const detail = []
+    const missing = []
     for (const n of Object.keys(times).map(Number).sort((a, b) => a - b)) {
-      if (n === 1 || !(n - 1 in times)) continue
+      if (n === 1) continue
+      if (!(n - 1 in times)) { missing.push(n); continue }
       const cur = times[n], prev = times[n - 1]
       const speedup = base / cur
       const eff = speedup / n
@@ -232,7 +245,10 @@ async function main() {
       detail.push({ concurrency: n, speedup: +speedup.toFixed(3), efficiency: +(eff * 100).toFixed(2), marginalGain: +(gain * 100).toFixed(2), absSave: +absSave.toFixed(2), passed })
       if (passed) best = n   // 覆盖而非 break：取满足条件的最大 n
     }
-    return { recommended: best, detail }
+    if (missing.length) {
+      console.warn(`[calibrate] 注意：档位 ${missing.join('/')} 缺少前一档数据，已跳过（相邻档缺失会让边际收益失真）`)
+    }
+    return { recommended: best, detail, missing }
   }
 
   const times = Object.fromEntries(results.map((r) => [r.concurrency, r.ms / 1000]))
