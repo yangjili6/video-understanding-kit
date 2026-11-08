@@ -24,8 +24,8 @@ function text(x, y, s, { size = 16, color = TEXT, weight = 400, mono = false } =
 }
 function arrow(y1, y2) {
   const id = `a${parts.length}`
-  parts.push(`<defs><marker id="${id}" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="${DIM}"/></marker></defs>`)
-  parts.push(`<line x1="${W / 2}" y1="${y1}" x2="${W / 2}" y2="${y2}" stroke="${DIM}" stroke-width="1.8" marker-end="url(#${id})"/>`)
+  parts.push(`<defs><marker id="${id}" markerWidth="11" markerHeight="11" refX="8" refY="4" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="${DIM}"/></marker></defs>`)
+  parts.push(`<line x1="${W / 2}" y1="${y1}" x2="${W / 2}" y2="${y2}" stroke="${DIM}" stroke-width="2.4" marker-end="url(#${id})"/>`)
 }
 const M = 24            // 左右边距
 const CW = W - M * 2    // 卡片宽度
@@ -47,8 +47,8 @@ text(W / 2, y + 50, 'video_analyze(video)', { size: 14, color: DIM, mono: true }
 let prevBottom = y + 62
 
 // 2 Orchestrator
-arrow(prevBottom, prevBottom + 34)
-y = prevBottom + 34
+arrow(prevBottom, prevBottom + 24)
+y = prevBottom + 24
 box(M, y, CW, 108, { stroke: BLUE })
 text(W / 2, y + 30, 'Orchestrator · 任务编排器', { size: 17, weight: 600, color: BLUE })
 text(W / 2, y + 56, '由插件控制，不交给 LLM 自主决定', { size: 14, color: DIM })
@@ -57,8 +57,8 @@ text(W / 2, y + 100, '只交出 taskId 与前 3 页导航', { size: 14 })
 prevBottom = y + 108
 
 // 3 视觉通道
-arrow(prevBottom, prevBottom + 30)
-y = prevBottom + 30
+arrow(prevBottom, prevBottom + 22)
+y = prevBottom + 22
 box(M, y, CW, 168, { stroke: GREEN })
 text(W / 2, y + 32, '视觉通道 · 强制执行', { size: 17, weight: 600, color: GREEN })
 for (const [i, s] of ['抽帧 / 网格分页', '场景与镜头切分', 'video_look 逐页看图', '账本记账 opened[]'].entries()) {
@@ -67,8 +67,8 @@ for (const [i, s] of ['抽帧 / 网格分页', '场景与镜头切分', 'video_l
 prevBottom = y + 168
 
 // 4 文本通道
-arrow(prevBottom, prevBottom + 30)
-y = prevBottom + 30
+arrow(prevBottom, prevBottom + 22)
+y = prevBottom + 22
 box(M, y, CW, 168)
 text(W / 2, y + 32, '文本通道 · 辅助执行', { size: 17, weight: 600 })
 for (const [i, s] of ['ASR 语音识别', 'PP-OCR 硬字幕', '时间戳对齐', '只随 video_look 交付'].entries()) {
@@ -77,8 +77,8 @@ for (const [i, s] of ['ASR 语音识别', 'PP-OCR 硬字幕', '时间戳对齐',
 prevBottom = y + 168
 
 // 5 Vision Gate
-arrow(prevBottom, prevBottom + 30)
-y = prevBottom + 30
+arrow(prevBottom, prevBottom + 22)
+y = prevBottom + 22
 box(M, y, CW, 178, { stroke: GREEN, fill: '#12201a' })
 text(W / 2, y + 34, 'Vision Gate · 视觉执行门', { size: 17, weight: 600, color: GREEN })
 text(W / 2, y + 58, '必须通过', { size: 14, color: GREEN })
@@ -88,8 +88,8 @@ for (const [i, s] of ['看过页数 ≥ max(3, 总页数 × 30%)', '覆盖关键
 prevBottom = y + 178
 
 // 6 LLM
-arrow(prevBottom, prevBottom + 30)
-y = prevBottom + 30
+arrow(prevBottom, prevBottom + 22)
+y = prevBottom + 22
 box(M, y, CW, 100)
 text(W / 2, y + 32, 'LLM 综合推理', { size: 17, weight: 600 })
 text(W / 2, y + 58, '基于「真的看过的画面」', { size: 14, color: DIM })
