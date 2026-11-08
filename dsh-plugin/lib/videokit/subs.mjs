@@ -98,6 +98,11 @@ export function resetStageTiming() {
 // 模型副本约 20MB，比并列跑 sherpa 安全得多。
 // 并发度按「大核数」定：这台机器是 1+3+4，能跑满的只有 4 个核
 const CPU_TOPOLOGY = detectCpuTopology()
+// 平台化并发上限：手机上只有 4 个能跑满的核，桌面核多、上限放到 12。
+// 2026-11-08：上游 21d4e76 只改了下面三处使用、漏了这条定义，
+// 导致 detWorkerCount() 直接 ReferenceError —— 视频分析一跑就崩。
+// DSH_DET_CAP 可覆盖（文档 HANDOFF-pc-threshold 里承诺过）。
+const DET_CAP = Number(process.env.DSH_DET_CAP || (process.platform === 'android' ? 4 : 12))
 // 热时退回单路：多个 worker 抢核会把整条管线拖慢（ADR-0007 实测过）。
 // 注意：必须在 OCR 真正开始时才测负载，模块加载时 CPU 还空着。
 
