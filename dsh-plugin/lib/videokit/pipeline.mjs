@@ -748,6 +748,10 @@ async function main() {
       leftGroupId: b.leftGroupId, rightGroupId: b.rightGroupId,
       lastLeftFrame: b.lastLeftFrame, firstRightFrame: b.firstRightFrame,
     })),
+    // 实际并发度与温度判定（供面板「最近运行」展示；subs 为数组，属性由 extractSubtitles 挂上）
+    detWorkers: Number.isFinite(Number(subs.detWorkers)) ? Number(subs.detWorkers) : null,
+    loadLevel: subs.loadLevel ?? null,
+    tempC: Number.isFinite(Number(subs.tempC)) ? Number(subs.tempC) : null,
     coverage: buildCoverage(duration, cues),
     checks: { ok: problems.length === 0, problems },
   }

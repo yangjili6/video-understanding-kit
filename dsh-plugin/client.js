@@ -78,6 +78,13 @@ window.__ModuleLoader__.load({
         parts.push(`${s.summary.groups} 组`)
         parts.push(`${s.summary.subs} 条字幕`)
         if (s.summary.asr !== null && s.summary.asr !== undefined) parts.push(`${s.summary.asr} 段台词`)
+        // 并发度与温度：让「跑了几路 / 有没有降档」在列表里直接可见
+        if (Number.isFinite(s.summary.detWorkers)) {
+          const lvl = s.summary.loadLevel
+          const tag = lvl === 'hot' ? '过热降档' : lvl === 'warm' ? '偏热降档' : null
+          parts.push(`${s.summary.detWorkers} 路${tag ? '（' + tag + '）' : ''}`)
+        }
+        if (Number.isFinite(s.summary.tempC)) parts.push(`${s.summary.tempC}℃`)
         return parts.join(' · ')
       }
       return ''

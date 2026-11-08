@@ -697,6 +697,9 @@ function recentRuns(limit = 6) {
         groups: (idx.groups || []).length,
         subs: (idx.subs || []).length,
         asr: idx.asr?.enabled ? (idx.asr.cues || []).length : null,
+        detWorkers: Number.isFinite(idx.detWorkers) ? idx.detWorkers : null,
+        loadLevel: idx.loadLevel ?? null,
+        tempC: Number.isFinite(idx.tempC) ? idx.tempC : null,
       }
     } catch {
       summary = null
@@ -1119,6 +1122,9 @@ export function apply(ctx) {
           indexJson: indexPath,
           // 分段耗时（秒）：TransNet / ASR / 补帧 / 分页各占多少，用于定位下一次该压哪里
           timings: idx.timings || null,
+          detWorkers: Number.isFinite(idx.detWorkers) ? idx.detWorkers : null,
+          loadLevel: idx.loadLevel ?? null,
+          tempC: Number.isFinite(idx.tempC) ? idx.tempC : null,
           elapsedMs: Date.now() - t0,
           nextStep: `${(args.fullReview ?? readFullReviewDefault()) === true ? GRID_RULE : GRID_RULE_LITE}` + (
             subs.length > 0

@@ -302,5 +302,12 @@ export async function extractSubtitles(video, outDir, opts = {}) {
     }
     merged.push({ ...r })
   }
+  // 挂上实际并发度与温度判定，供 index.json / 面板「最近运行」展示
+  try {
+    merged.detWorkers = detWorkers
+    const lv = detectLoad(CPU_TOPOLOGY)
+    merged.loadLevel = lv.level
+    merged.tempC = lv.tempC ?? null
+  } catch { /* 展示信息，失败不影响主流程 */ }
   return merged
 }
