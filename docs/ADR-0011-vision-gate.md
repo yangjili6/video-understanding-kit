@@ -37,6 +37,8 @@
 
 把视觉分析从「LLM 自觉」改成**程序编排的强制工作流**，分三件：
 
+![视觉强制执行工作流](diagrams/vision-gate@2x.png)
+
 ```
 Orchestrator（外部编排器）  由插件控制步骤，不交给 LLM 自主决定
 Vision Gate（视觉执行门）    没有视觉证据就不给综合结论
