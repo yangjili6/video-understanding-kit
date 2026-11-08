@@ -765,7 +765,7 @@ async function main() {
     dedup: dedupResult ? {
       globalSim: 6, roiChange: 10,
       kept: dedupResult.kept.map((x) => ({ page: x.page, file: x.file, reason: x.dedupReason })),
-      dropped: dedupResult.dropped.map((x) => ({ page: x.page, file: x.file, reason: x.dedupReason })),
+      dropped: dedupResult.dropped.map((x) => ({ page: x.page, file: x.file, reason: x.dedupReason, representativePage: x.representativePage ?? null })),
       stats: dedupResult.stats,
     } : null,
     coverage: buildCoverage(duration, cues),

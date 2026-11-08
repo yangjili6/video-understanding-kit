@@ -1153,6 +1153,12 @@ export function apply(ctx) {
           indexJson: indexPath,
           // 分段耗时（秒）：TransNet / ASR / 补帧 / 分页各占多少，用于定位下一次该压哪里
           timings: idx.timings || null,
+          // 去重结果摘要：只给统计与页名，不给正文（正文要 video_look 按页取）
+          dedup: idx.dedup ? {
+            stats: idx.dedup.stats,
+            kept: (idx.dedup.kept || []).map((x) => x.page),
+            dropped: (idx.dedup.dropped || []).map((x) => ({ page: x.page, representativePage: x.representativePage ?? null })),
+          } : null,
           detWorkers: Number.isFinite(idx.detWorkers) ? idx.detWorkers : null,
           loadLevel: idx.loadLevel ?? null,
           tempC: Number.isFinite(idx.tempC) ? idx.tempC : null,
@@ -1227,7 +1233,7 @@ export function apply(ctx) {
             reason: 'dropped_by_dedup',
             page: pageName,
             representativePage: dropInfo.representativePage,
-            dedupReason: dropInfo.dedupReason,
+            dedupReason: dropInfo.reason ?? null,
             hint: '这页被判定与代表页视觉近似。概览阶段可跳过；要核对细节或回答定向问题请传 includeDropped: true',
           }
         }
@@ -1246,10 +1252,10 @@ export function apply(ctx) {
           subs: subsIn.map((x) => ({ start: x.start, end: x.end, text: x.text })),
           asr: asrIn.map((c) => ({ s: Number(c.s), e: Number(c.e), text: c.text })),
           openedCount: led.opened.length,
-          dedup: dedup ? {
+          dedup: dd ? {
             role: isKept ? 'kept' : 'dropped',
             representativePage: dropInfo?.representativePage || null,
-            reason: dropInfo?.dedupReason || null,
+            reason: dropInfo?.reason ?? null,
           } : null,
         }
       } catch (e) {
