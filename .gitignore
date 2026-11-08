@@ -11,6 +11,8 @@ lib/models/
 out/
 out-*/
 *.zip
+# npm pack 的产物（dsh-plugin/dsh-video-kit-*.tgz），每次打包重新生成
+*.tgz
 
 # 临时与日志
 tmp/
