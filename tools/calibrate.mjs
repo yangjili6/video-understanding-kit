@@ -12,7 +12,7 @@
 //   node tools/calibrate.mjs <video> --max 6     # 最多测 6 路
 //   node tools/calibrate.mjs --json              # 输出 JSON（给脚本消费）
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Worker } from 'node:worker_threads'
@@ -22,9 +22,51 @@ import { pathToFileURL, fileURLToPath } from 'node:url'
 // 用 fileURLToPath 而不是 URL.pathname：后者在 Windows 上会留下 /D:/ 前缀
 // 且把空格/中文 percent-encode 成 %20/%E5%B7%A5，路径不可用。
 const VK_ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
-const VK_DIR = process.env.VK_DIR || join('/storage/emulated/0/Documents/dsh-work/dsh-video-kit/lib/videokit')  // 装了 node_modules 的那份
+// 装了 node_modules 的那份运行时。默认就取脚本的上一级——真源在 <仓库>/tools 时是仓库根，
+// 副本在 <pkg>/lib/videokit/tools 时是 <pkg>/lib/videokit，两种布局下都指得对。
+// 写死 Android 绝对路径会让 PC 上报 Cannot find module。
+const VK_DIR = process.env.VK_DIR || VK_ROOT
 const DEFAULT_VIDEO = '/storage/emulated/0/Documents/dsh-work/test-media/BV1B1xR6nEi4.mp4'
 const PROBE_FRAMES = Number(process.env.PROBE_FRAMES || 24)
+
+// ── 选档阈值：手机与 PC 唯一的流程差异就在这里，其余步骤完全一致 ────────────
+// 流程是统一的：探测核数 → 跑标定 → 存本机标定 → 公式选档 → 启用并行 OCR。
+// 分档的只是这两个数字，因为两端的「噪声底」差一个量级：
+//   效率 ≥40%：两端一样。低于它说明多开的 worker 有一半在空转。
+//   边际 ≥10% / 5%：手机只有 4 个能跑满的大核、且极差 5~14%，多开一路基本白给，
+//     阈值必须卡在噪声之上；PC 核多，5~7 路的边际还有 6~7%，
+//     用 10% 会把整段可用区间判死（实测 8 路效率仍有 41.5%，白丢 22% 墙钟）。
+//   绝对节省 ≥0.3s：两端一样，多开一个 worker 至少得换回 0.3 秒。
+const IS_ANDROID = process.platform === 'android'
+const MIN_EFF = Number(process.env.CALIB_MIN_EFF || 0.40)
+const MIN_GAIN = Number(process.env.CALIB_MIN_GAIN || (IS_ANDROID ? 0.10 : 0.05))
+const MIN_ABS_SAVE = Number(process.env.CALIB_MIN_ABS_SAVE || 0.3)
+
+// 标定要从视频抽帧，但 det 是「固定尺寸的 CNN 前向」，耗时几乎与画面内容无关，
+// 标定要的是各档之间的相对加速比。所以 PC 上没有手机那套默认素材时，现造一段即可。
+function resolveVideo(preferred) {
+  const explicit = process.env.CALIB_VIDEO || (preferred !== DEFAULT_VIDEO ? preferred : null)
+  if (explicit) {
+    if (!existsSync(explicit)) throw new Error(`标定视频不存在：${explicit}`)
+    return explicit
+  }
+  if (existsSync(DEFAULT_VIDEO)) return DEFAULT_VIDEO
+  // PC 约定素材：面板自动标定时不传路径，手机有固定的 BV1B1xR6nEi4.mp4，
+  // 桌面端就用 storages/dsh-video-kit/calib-source.mp4 顶上（放真实的带字幕视频最准）。
+  const home = process.env.DSH_HOME
+  if (home) {
+    const preferredSrc = join(home, 'storages', 'dsh-video-kit', 'calib-source.mp4')
+    if (existsSync(preferredSrc)) return preferredSrc
+  }
+  const made = join(tmpdir(), 'calib-synthetic.mp4')
+  if (!existsSync(made)) {
+    console.log('[calibrate] 找不到测试视频，现造一段 30s 合成片（内容不影响 det 前向耗时）')
+    execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi',
+      '-i', 'testsrc2=size=1280x720:rate=30', '-t', '30', '-pix_fmt', 'yuv420p', made, '-y'],
+    { maxBuffer: 64 * 1024 * 1024 })
+  }
+  return made
+}
 
 function parseArgs() {
   const a = process.argv.slice(2)
@@ -93,15 +135,16 @@ function readTempC() {
 
 async function main() {
   const args = parseArgs()
+  const VIDEO = resolveVideo(args.video)
   const topology = detectCpuTopology()
   const dir = join(tmpdir(), `calib-${Date.now()}`)
   mkdirSync(dir, { recursive: true })
 
-  console.log(`[calibrate] 视频: ${args.video}`)
+  console.log(`[calibrate] 视频: ${VIDEO}`)
   console.log(`[calibrate] 拓扑: 在线 ${topology.total} 核 / 大核 ${topology.big} 个（来源: ${topology.source}）`)
 
   // 抽固定数量的测试帧（2fps，和 OCR 主流程一致）
-  execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', args.video,
+  execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', VIDEO,
     '-vf', 'fps=2,scale=960:-1', '-q:v', '2', join(dir, 'f-%04d.jpg'), '-y'], { maxBuffer: 512 * 1024 * 1024 })
   const all = readdirSync(dir).filter((f) => f.endsWith('.jpg')).sort()
   const step = Math.max(1, Math.floor(all.length / args.frames))
@@ -171,7 +214,7 @@ async function main() {
   // 某一档不满足只说明该档不该选，不阻断更高档位的判定。
   // （手机端 2/3 通过、4 拒绝，两种解读恰好同解都是 3 路；PC 上 4 路边际 7.9%
   //   属噪声误杀，若按连续递进会停在 3 路，白丢 31% 吞吐。）
-  function recommendByEfficiency(times, minEff = 0.40, minGain = 0.10, minAbsSave = 0.3) {
+  function recommendByEfficiency(times, minEff = MIN_EFF, minGain = MIN_GAIN, minAbsSave = MIN_ABS_SAVE) {
     const base = times[1]
     let best = 1
     const detail = []
@@ -191,13 +234,14 @@ async function main() {
 
   const times = Object.fromEntries(results.map((r) => [r.concurrency, r.ms / 1000]))
   const effRec = recommendByEfficiency(times)
-  // 主推荐用效率公式（指挥官定的规则）：效率 ≥40% ∧ 相邻档边际 ≥8%。
+  // 主推荐用效率公式（指挥官定的规则）：
+  //   效率 ≥40% ∧ 相邻档边际 ≥10%(android)/5%(其它) ∧ 绝对节省 ≥0.3s
   // 只看「谁最快」会把边际收益已经为负的档也选进来（实测过 4 路）。
   const pick = results.find((r) => r.concurrency === effRec.recommended) || results[0]
 
   const summary = {
     at: new Date().toISOString(),
-    video: args.video,
+    video: VIDEO,
     frames: picked.length,
     topology,
     results: results.map((r) => ({
@@ -215,6 +259,13 @@ async function main() {
     recommendedByEfficiency: effRec.recommended,
     efficiencyDetail: effRec.detail,
     tolerance: TOLERANCE,
+    // 本次判定实际用的阈值（按平台分档），写进结果便于回溯
+    thresholds: {
+      minEfficiency: MIN_EFF,
+      minMarginalGain: MIN_GAIN,
+      minAbsSave: MIN_ABS_SAVE,
+      platform: process.platform,
+    },
     note: pick.concurrency === 1
       ? '建议 OCR 并发度 = 1（并行收益不足，保持串行）'
       : `建议 OCR 并发度 = ${pick.concurrency}（相对 1 路 ${(serial / pick.ms).toFixed(2)}x，效率 ${(((serial / pick.ms) / pick.concurrency) * 100).toFixed(0)}%）`,
