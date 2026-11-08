@@ -1188,6 +1188,10 @@ export function apply(ctx) {
       properties: {
         taskId: { type: 'string', description: 'video_analyze 返回的 taskId（结果目录名）' },
         index: { type: 'number', description: '页序号，从 0 开始' },
+        includeDropped: {
+          type: 'boolean',
+          description: '是否允许读被标记去重的页。默认 false：概览阶段按代表页读；要核对细节或回答定向问题时传 true',
+        },
       },
       required: ['taskId', 'index'],
       additionalProperties: false,
@@ -1210,8 +1214,28 @@ export function apply(ctx) {
         const to = ts.length ? Math.max.apply(null, ts) : 0
         const subsIn = (idx.subs || []).filter((x) => Number(x.end) >= from - 0.5 && Number(x.start) <= to + 0.5)
         const asrIn = ((idx.asr && idx.asr.cues) ? idx.asr.cues : []).filter((c) => Number(c.e) >= from - 0.5 && Number(c.s) <= to + 0.5)
+        // 去重状态：这页是代表页还是被标记去重的页
+        const dd = idx.dedup || null
+        const keptSet = new Set((dd?.kept || []).map((x) => x.page))
+        const droppedMap = new Map((dd?.dropped || []).map((x) => [x.page, x]))
+        const pageName = pg.page
+        const isKept = keptSet.has(pageName)
+        const dropInfo = droppedMap.get(pageName) || null
+        if (dropInfo && args.includeDropped !== true) {
+          return {
+            ok: false,
+            reason: 'dropped_by_dedup',
+            page: pageName,
+            representativePage: dropInfo.representativePage,
+            dedupReason: dropInfo.dedupReason,
+            hint: '这页被判定与代表页视觉近似。概览阶段可跳过；要核对细节或回答定向问题请传 includeDropped: true',
+          }
+        }
         const led = readLedger(dir)
         led.opened = Array.from(new Set((led.opened || []).concat([n]))).sort((a, b) => a - b)
+        // 查看状态单独记：不从 kept/dropped 推导（ADR-0012 / 霁璃建议）
+        led.viewed = led.viewed || {}
+        led.viewed[pageName] = { at: new Date().toISOString(), index: n, dropped: !!dropInfo }
         writeLedger(dir, led)
         return {
           ok: true,
@@ -1222,6 +1246,11 @@ export function apply(ctx) {
           subs: subsIn.map((x) => ({ start: x.start, end: x.end, text: x.text })),
           asr: asrIn.map((c) => ({ s: Number(c.s), e: Number(c.e), text: c.text })),
           openedCount: led.opened.length,
+          dedup: dedup ? {
+            role: isKept ? 'kept' : 'dropped',
+            representativePage: dropInfo?.representativePage || null,
+            reason: dropInfo?.dedupReason || null,
+          } : null,
         }
       } catch (e) {
         return { ok: false, error: String((e && e.message) || e) }
@@ -1256,25 +1285,54 @@ export function apply(ctx) {
         const opened = led.opened || []
         const total = pages.length
         const need = Math.max(3, Math.ceil(total * 0.3))
+
+        // 三组指标分开报（霁璃建议）：不拿「有映射」折算「已查看」
+        const dd = idx.dedup || null
+        const keptPages = (dd?.kept || []).map((x) => x.page)
+        const droppedPages = (dd?.dropped || []).map((x) => x.page)
+        const allPageNames = pages.map((pg) => pg.page)
+        const viewedNames = Object.keys(led.viewed || {})
+        const startedAt = led.createdAt || null
+
+        const originalsViewed = opened.length
+        const keptViewed = keptPages.filter((n) => viewedNames.includes(n)).length
+        const droppedViewed = droppedPages.filter((n) => viewedNames.includes(n)).length
+        const unmapped = droppedPages.filter((n) => {
+          const rec = (dd?.dropped || []).find((x) => x.page === n)
+          return !rec || !rec.representativePage
+        }).length
+
+        const coverage = {
+          // 第一组：原始页直接查看率 —— 这才是「看全」的验收口径，分母不缩
+          originals: { viewed: originalsViewed, total, rate: +(originalsViewed / total).toFixed(3) },
+          // 第二组：代表页查看率（去重后的首轮阅读成本）
+          kept: keptPages.length ? { viewed: keptViewed, total: keptPages.length, rate: +(keptViewed / keptPages.length).toFixed(3) } : null,
+          // 第三组：去重映射完整性 —— 只说明「可追溯」，不折算成「已查看」
+          mapping: { total: droppedPages.length, unmapped, complete: unmapped === 0 },
+        }
+
         if (opened.length < need) {
           const missing = []
           for (let i = 0; i < total && missing.length < 20; i++) if (opened.indexOf(i) < 0) missing.push(i)
           return {
             ok: false,
             gate: 'rejected',
-            reason: '视觉证据不足：看过 ' + opened.length + '/' + total + ' 页，至少需要 ' + need + ' 页',
-            openedPages: opened.length,
-            totalPages: total,
-            requiredPages: need,
+            reason: '原始页视觉证据不足：直接查看 ' + originalsViewed + '/' + total + ' 页，至少需要 ' + need + ' 页',
+            coverage,
+            summary: '原始页直接查看 ' + originalsViewed + '/' + total +
+              (keptPages.length ? '；代表页查看 ' + keptViewed + '/' + keptPages.length : '') +
+              (droppedPages.length ? '；另有 ' + (droppedPages.length - droppedViewed) + ' 页视觉近似暂未查看' : ''),
             missingFirst: missing,
-            hint: '用 video_look 逐页看（含关键转场页），再重新提交结论',
+            hint: '用 video_look 逐页看（dropped 页需传 includeDropped: true）；去重只降低阅读成本，不改变覆盖口径',
           }
         }
         return {
           ok: true,
           gate: 'passed',
-          openedPages: opened.length,
-          totalPages: total,
+          coverage,
+          summary: '原始页直接查看 ' + originalsViewed + '/' + total +
+            (keptPages.length ? '；代表页查看 ' + keptViewed + '/' + keptPages.length : '') +
+            (droppedPages.length ? '；另有 ' + (droppedPages.length - droppedViewed) + ' 页视觉近似暂未查看' : ''),
           requiredPages: need,
           conclusion: String(args.conclusion || ''),
         }
