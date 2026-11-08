@@ -669,6 +669,35 @@ function readJsonBody(req) {
   })
 }
 
+/** 任务目录解析：taskId 即结果目录名，限制在 storages/out 下（防路径穿越）。 */
+function taskDir(taskId) {
+  const name = String(taskId || '')
+  if (!name || name.indexOf('/') >= 0 || name.indexOf('\\') >= 0 || name.indexOf('..') >= 0) return null
+  const dir = join(storageRoot(), 'out', name)
+  return existsSync(join(dir, 'index.json')) ? dir : null
+}
+
+/** 视觉证据账本：看过哪几页，服务端记录（ADR-0011）。 */
+function ledgerFile(dir) {
+  return join(dir, 'ledger.json')
+}
+
+function readLedger(dir) {
+  try {
+    return JSON.parse(readFileSync(ledgerFile(dir), 'utf8').replace(/^\uFEFF/, ''))
+  } catch {
+    return { opened: [], createdAt: new Date().toISOString() }
+  }
+}
+
+function writeLedger(dir, led) {
+  try {
+    writeFileSync(ledgerFile(dir), JSON.stringify(led, null, 2))
+  } catch {
+    /* 记账失败不影响主流程 */
+  }
+}
+
 /** 最近几次运行的概况（按目录名里的时间戳 + index.json 摘要）。 */
 function recentRuns(limit = 6) {
   const outRoot = join(storageRoot(), 'out')
@@ -1110,14 +1139,16 @@ export function apply(ctx) {
           groupsDetail: groups.slice(0, 40),
           // subsCount 只统计 PP-OCR 硬字幕；asrCount 是语音台词条数。两者互不代表。
           subsCount: subs.length,
-          subs,
           asrEnabled: Boolean(idx.asr?.enabled ?? asrOn),
           asrCount: asrCues.length,
-          asr: asrCues,
+          // ADR-0011：不再一次交付全部字幕/台词。字按页取（video_look），
+          // 图和字在同一个返回里，避免「字幕够用就不看图」。
+          taskId: basename(outDir),
+          totalPages: gridFiles.length,
           outDir,
           gridsDir,
           // 前 12 页覆盖整条时间线；要看某一段的细节再按 gridsDir 取其余页
-          grids: gridFiles.slice(0, 12),
+          grids: gridFiles.slice(0, 3),
           gridsCount: gridFiles.length,
           indexJson: indexPath,
           // 分段耗时（秒）：TransNet / ASR / 补帧 / 分页各占多少，用于定位下一次该压哪里
@@ -1140,6 +1171,115 @@ export function apply(ctx) {
         return { ok: false, error: String(e?.message || e) }
       } finally {
         if (tmpDir) await rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+      }
+    },
+  })
+
+  // ── video_look：一页网格 + 该页字幕/台词（ADR-0011 视觉强制执行）─────────
+  tools.push({
+    name: 'video_look',
+    description:
+      '看视频的第 N 页网格，同时拿到这一页时间段内的硬字幕与语音台词。' +
+      '**看图说话必须先调这个**：图和字在同一个返回里，不是「字幕是正文、图是附件」。' +
+      'taskId 来自 video_analyze 的返回，index 从 0 开始。' +
+      '服务端会记录你看过哪几页，video_report 的门禁读的是这份记录。',
+    parameters: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', description: 'video_analyze 返回的 taskId（结果目录名）' },
+        index: { type: 'number', description: '页序号，从 0 开始' },
+      },
+      required: ['taskId', 'index'],
+      additionalProperties: false,
+    },
+    output: jsonOut,
+    async execute(args = {}) {
+      try {
+        const dir = taskDir(args.taskId)
+        if (!dir) return { ok: false, error: '找不到任务：' + args.taskId }
+        const idx = JSON.parse(readFileSync(join(dir, 'index.json'), 'utf8'))
+        const pages = []
+        for (const g of idx.groups || []) for (const pg of g.pages || []) pages.push(pg)
+        const n = Number(args.index)
+        if (!Number.isInteger(n) || n < 0 || n >= pages.length) {
+          return { ok: false, error: 'index 超出范围（0..' + (pages.length - 1) + '）' }
+        }
+        const pg = pages[n]
+        const ts = (pg.frames || []).map((f) => Number(f.t)).filter(Number.isFinite)
+        const from = ts.length ? Math.min.apply(null, ts) : 0
+        const to = ts.length ? Math.max.apply(null, ts) : 0
+        const subsIn = (idx.subs || []).filter((x) => Number(x.end) >= from - 0.5 && Number(x.start) <= to + 0.5)
+        const asrIn = ((idx.asr && idx.asr.cues) ? idx.asr.cues : []).filter((c) => Number(c.e) >= from - 0.5 && Number(c.s) <= to + 0.5)
+        const led = readLedger(dir)
+        led.opened = Array.from(new Set((led.opened || []).concat([n]))).sort((a, b) => a - b)
+        writeLedger(dir, led)
+        return {
+          ok: true,
+          index: n,
+          totalPages: pages.length,
+          gridPath: pg.file,
+          t: [Number(from.toFixed(2)), Number(to.toFixed(2))],
+          subs: subsIn.map((x) => ({ start: x.start, end: x.end, text: x.text })),
+          asr: asrIn.map((c) => ({ s: Number(c.s), e: Number(c.e), text: c.text })),
+          openedCount: led.opened.length,
+        }
+      } catch (e) {
+        return { ok: false, error: String((e && e.message) || e) }
+      }
+    },
+  })
+
+  // ── video_report：视觉门禁（ADR-0011）──────────────────────────────────────
+  tools.push({
+    name: 'video_report',
+    description:
+      '提交视频结论。会先检查视觉证据：看过几页、覆盖了多少比例。' +
+      '**没达到门禁会被拒绝**，返回还缺哪些页。这是为了防止「只看了第 1 页就说全片」。',
+    parameters: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', description: 'video_analyze 返回的 taskId' },
+        conclusion: { type: 'string', description: '你的结论（基于看过的网格页与字幕）' },
+      },
+      required: ['taskId', 'conclusion'],
+      additionalProperties: false,
+    },
+    output: jsonOut,
+    async execute(args = {}) {
+      try {
+        const dir = taskDir(args.taskId)
+        if (!dir) return { ok: false, error: '找不到任务：' + args.taskId }
+        const idx = JSON.parse(readFileSync(join(dir, 'index.json'), 'utf8'))
+        const pages = []
+        for (const g of idx.groups || []) for (const pg of g.pages || []) pages.push(pg)
+        const led = readLedger(dir)
+        const opened = led.opened || []
+        const total = pages.length
+        const need = Math.max(3, Math.ceil(total * 0.3))
+        if (opened.length < need) {
+          const missing = []
+          for (let i = 0; i < total && missing.length < 20; i++) if (opened.indexOf(i) < 0) missing.push(i)
+          return {
+            ok: false,
+            gate: 'rejected',
+            reason: '视觉证据不足：看过 ' + opened.length + '/' + total + ' 页，至少需要 ' + need + ' 页',
+            openedPages: opened.length,
+            totalPages: total,
+            requiredPages: need,
+            missingFirst: missing,
+            hint: '用 video_look 逐页看（含关键转场页），再重新提交结论',
+          }
+        }
+        return {
+          ok: true,
+          gate: 'passed',
+          openedPages: opened.length,
+          totalPages: total,
+          requiredPages: need,
+          conclusion: String(args.conclusion || ''),
+        }
+      } catch (e) {
+        return { ok: false, error: String((e && e.message) || e) }
       }
     },
   })
