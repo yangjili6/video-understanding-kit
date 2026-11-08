@@ -22,6 +22,7 @@ import { pipeline } from 'node:stream/promises'
 import { homedir } from 'node:os'
 import { basename, delimiter, dirname, extname, isAbsolute, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { detectCpuTopology } from './lib/videokit/lib/cpu.mjs'
 
 export const name = 'dsh-video-kit'
 export const version = '0.2.3'
@@ -486,9 +487,52 @@ function removeAsset(target) {
 // 语义：面板上的开关是「默认行为」，工具参数显式传了就以参数为准。
 // 这样面板不用管每次调用的特例，Agent 也能针对性覆盖。
 
-const DEFAULT_CONFIG = { ocr: true, asr: false, baseFps: 5, fullReview: false, updatedAt: null, updatedBy: null }
+const DEFAULT_CONFIG = { ocr: true, asr: false, baseFps: 5, fullReview: false, ocrAccel: false, calibration: null, updatedAt: null, updatedBy: null }
 
 // 面板默认值：每次调用时读，面板改了立刻生效（不要做成模块级常量）
+// 本机标定：跑 tools/calibrate.mjs，读回结果并附带设备指纹。
+// 「第一次打开 OCR 加速」时由面板触发；换设备后指纹不匹配就重新标定。
+const CALIB_SCRIPT = join(KIT_DIR, '..', '..', '..', 'tools', 'calibrate.mjs')
+
+function deviceFingerprint() {
+  const t = detectCpuTopology()
+  return { platform: process.platform, big: t.big, total: t.total, arch: process.arch }
+}
+
+function sameDevice(a, b) {
+  if (!a || !b) return false
+  return a.platform === b.platform && a.total === b.total && a.big === b.big
+}
+
+async function runCalibrationNow() {
+  const script = resolve(CALIB_SCRIPT)
+  if (!existsSync(script)) throw new Error(`找不到标定脚本：${script}`)
+  const outFile = join(dirname(script), '..', 'tmp', 'calibrate-result.json')
+  await new Promise((resolvePromise, reject) => {
+    const child = spawn(process.execPath, [script, '--max', '16', '--frames', '48'], {
+      cwd: dirname(script),
+      env: { ...process.env, REPS: process.env.REPS || '3' },
+      stdio: 'ignore',
+    })
+    const timer = setTimeout(() => { try { child.kill('SIGKILL') } catch {} ; reject(new Error('标定超时（10 分钟）')) }, 10 * 60 * 1000)
+    child.on('error', (e) => { clearTimeout(timer); reject(e) })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      if (code === 0) resolvePromise()
+      else reject(new Error('标定脚本退出码 ' + code))
+    })
+  })
+  const raw = readFileSync(outFile, 'utf8').replace(/^\uFEFF/, '')
+  const j = JSON.parse(raw)
+  return {
+    recommended: j.recommended,
+    at: j.at || new Date().toISOString(),
+    device: deviceFingerprint(),
+    efficiency: j.results?.find((r) => r.concurrency === j.recommended)?.efficiency ?? null,
+    marginal: j.results?.find((r) => r.concurrency === j.recommended)?.marginalGain ?? null,
+  }
+}
+
 function readFullReviewDefault() {
   try { return !!loadConfig().fullReview } catch { return false }
 }
@@ -529,6 +573,20 @@ function coerceConfig(raw) {
   if (typeof raw.asr === 'boolean') out.asr = raw.asr
   // 白名单清洗：不加这一行，面板存进来的 fullReview 会被静默丢弃
   if (typeof raw.fullReview === 'boolean') out.fullReview = raw.fullReview
+  if (typeof raw.ocrAccel === 'boolean') out.ocrAccel = raw.ocrAccel
+  // calibration：本机标定记录（含设备指纹），结构由 /calibrate 端点写入
+  if (raw.calibration && typeof raw.calibration === 'object') {
+    const c = raw.calibration
+    if (Number.isFinite(c.recommended) && c.recommended >= 1) {
+      out.calibration = {
+        recommended: Math.round(c.recommended),
+        at: typeof c.at === 'string' ? c.at : null,
+        device: c.device && typeof c.device === 'object' ? c.device : null,
+        efficiency: Number.isFinite(c.efficiency) ? c.efficiency : null,
+        marginal: Number.isFinite(c.marginal) ? c.marginal : null,
+      }
+    }
+  }
   const fps = Number(raw.baseFps)
   if (Number.isFinite(fps) && fps >= 1 && fps <= 12) out.baseFps = fps
   if (typeof raw.updatedAt === 'string') out.updatedAt = raw.updatedAt
@@ -839,10 +897,15 @@ function runPipeline(videoPath, outDir, opts = {}) {
     if (opts.asr) args.push('--asr')
     if (opts.baseFps) args.push('--base-fps', String(opts.baseFps))
 
+    const cfgForRun = loadConfig()
+    const calibForRun = cfgForRun.calibration
     const child = spawn(process.execPath, args, {
       cwd: KIT_DIR,
       env: {
         ...process.env,
+        // OCR 加速：开关 + 本机标定值。子进程读不到插件配置，只能走环境变量。
+        DSH_OCR_ACCEL: cfgForRun.ocrAccel ? '1' : '0',
+        DSH_OCR_CALIB_N: calibForRun && Number.isFinite(calibForRun.recommended) ? String(calibForRun.recommended) : '',
         PATH: [
           // Windows + ImageMagick 7：imagemagickBinDir() 提供 convert/montage 等命令名，
           // resolveMagickHome() 提供这些 exe 依赖的 DLL。手机端两者都为空，行为不变。
@@ -1160,6 +1223,25 @@ export function apply(ctx) {
               const body = await readJsonBody(req)
               const next = saveConfig(body, String(body?.updatedBy || 'panel'))
               return sendJson(res, 200, { ok: true, config: next })
+            }
+
+            if (rest === 'calibrate' && method === 'POST') {
+              try {
+                const calibration = await runCalibrationNow()
+                const next = saveConfig({ calibration, updatedBy: 'calibrate' })
+                return sendJson(res, 200, { ok: true, calibration: next.calibration })
+              } catch (e) {
+                return sendJson(res, 500, { ok: false, error: String(e?.message || e) })
+              }
+            }
+
+            // 面板打开开关时问一句：本机有没有可用的标定
+            if (rest === 'calibration-status' && method === 'GET') {
+              const cfg = loadConfig()
+              const fp = deviceFingerprint()
+              const c = cfg.calibration
+              const fresh = !!c && sameDevice(c.device, fp)
+              return sendJson(res, 200, { ok: true, calibrated: fresh, calibration: c, device: fp })
             }
 
             if (rest === 'recent' && method === 'GET') {

@@ -131,6 +131,15 @@ function readCalibration() {
 
 function detWorkerCount() {
   if (process.env.SUBS_DET_WORKERS) return Number(process.env.SUBS_DET_WORKERS)
+  // 面板「OCR 加速」开关（由插件通过环境变量传入）：关 = 强制串行
+  if (process.env.DSH_OCR_ACCEL === '0') return 1
+  // 插件传入的标定值（面板里存的那份，带设备指纹），优先于本地 calibrate-result.json
+  const fromPlugin = Number(process.env.DSH_OCR_CALIB_N)
+  if (Number.isFinite(fromPlugin) && fromPlugin >= 1) {
+    const load0 = detectLoad(CPU_TOPOLOGY)
+    const cap0 = load0.maxConcurrency ?? Number.POSITIVE_INFINITY
+    return Math.max(1, Math.min(fromPlugin, CPU_TOPOLOGY.big, cap0, DET_CAP))
+  }
   // ① 实测标定优先（ADR-0009）+ 温度上限（温度优先于吞吐量）
   const calib = readCalibration()
   if (calib) {

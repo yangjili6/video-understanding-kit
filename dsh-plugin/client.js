@@ -265,6 +265,8 @@ window.__ModuleLoader__.load({
       const ocrOn = !!(cfg && cfg.ocr)
       const asrOn = !!(cfg && cfg.asr)
       const fullReviewOn = !!(cfg && cfg.fullReview)
+      const ocrAccelOn = !!(cfg && cfg.ocrAccel)
+      const calib = cfg && cfg.calibration
 
       return h(
         'div',
@@ -375,6 +377,56 @@ window.__ModuleLoader__.load({
         h(
           'div',
           null,
+        h(
+          'div',
+          { className: 'dvk-section' },
+          h('div', { className: 'dvk-section-title' }, 'OCR 加速'),
+          h(
+            'div',
+            { className: 'dvk-row' },
+            h(
+              'div',
+              { className: 'dvk-row-main' },
+              h('div', { className: 'dvk-row-name' }, '并行检测'),
+              h(
+                'div',
+                { className: 'dvk-row-desc' },
+                ocrAccelOn
+                  ? (calib
+                      ? `已标定：本机推荐 ${calib.recommended} 路${calib.at ? '（' + new Date(calib.at).toLocaleString() + '）' : ''}`
+                      : '未标定 —— 首次开启会自动跑一次标定实验（约 1~2 分钟）')
+                  : '关闭时 OCR 逐帧串行，稳但慢。开启后按本机实测的最优路数并行。',
+              ),
+            ),
+            h(
+              'div',
+              { className: 'dvk-row-side' },
+              h(Switch, {
+                on: ocrAccelOn,
+                disabled: loading || busy,
+                label: 'OCR 并行检测',
+                onToggle: async () => {
+                  const next = !ocrAccelOn
+                  await patch({ ocrAccel: next, updatedBy: 'panel' })
+                  // 第一次打开（或换了设备）：后台跑一次标定，完成后刷新面板显示的路数
+                  if (next && !calib) {
+                    try {
+                      setErr('')
+                      const r = await apiCall('/calibrate', { method: 'POST', body: { updatedBy: 'panel' } })
+                      if (r && r.calibration) {
+                        const c2 = await apiCall('/config')
+                        if (mounted.current) setCfg(c2.config)
+                      }
+                    } catch (e) {
+                      if (mounted.current) setErr('标定失败：' + String((e && e.message) || e))
+                    }
+                  }
+                },
+              }),
+            ),
+          ),
+        ),
+
         h(
           'div',
           { className: 'dvk-section' },
