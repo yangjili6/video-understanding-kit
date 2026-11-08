@@ -50,4 +50,5 @@
 
 ## 图表
 
-- [OCR 并发与温度决策](diagrams/pipeline-core@2x.png) — 由 `tools/draw-core-svg.mjs` 生成；改数据后重跑脚本即可更新。
+- [OCR 并发与温度决策](diagrams/pipeline-core@2x.png)
+- [视觉强制执行工作流](diagrams/vision-gate@2x.png) — 由 `tools/draw-vision-gate-svg.mjs` 生成；含方案边界与两次门禁实测。 — 由 `tools/draw-core-svg.mjs` 生成；改数据后重跑脚本即可更新。

@@ -45,6 +45,8 @@ Evidence Ledger（证据账本）  看过哪几页由服务端记录，不由 LL
 
 参考指挥官给出的架构：
 
+![视觉强制执行工作流](diagrams/vision-gate@2x.png)
+
 ```
 用户任务
   ↓
