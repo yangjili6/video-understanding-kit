@@ -492,7 +492,7 @@ const DEFAULT_CONFIG = { ocr: true, asr: false, baseFps: 5, fullReview: false, o
 // 面板默认值：每次调用时读，面板改了立刻生效（不要做成模块级常量）
 // 本机标定：跑 tools/calibrate.mjs，读回结果并附带设备指纹。
 // 「第一次打开 OCR 加速」时由面板触发；换设备后指纹不匹配就重新标定。
-const CALIB_SCRIPT = join(KIT_DIR, '..', '..', '..', 'tools', 'calibrate.mjs')
+const CALIB_SCRIPT = join(KIT_DIR, 'tools', 'calibrate.mjs')
 
 function deviceFingerprint() {
   const t = detectCpuTopology()

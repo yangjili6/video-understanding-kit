@@ -23,7 +23,8 @@
     "lib/videokit/lib/transnet-lib.mjs",
     "lib/videokit/lib/transnet-worker.mjs",
     "lib/videokit/lib/ocr-det-worker.mjs",
-    "lib/videokit/lib/cpu.mjs"
+    "lib/videokit/lib/cpu.mjs",
+    "lib/videokit/tools/calibrate.mjs"
   ],
   "license": "MIT",
   "dsh": {

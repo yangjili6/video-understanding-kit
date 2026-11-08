@@ -370,7 +370,6 @@ window.__ModuleLoader__.load({
               },
             }),
           ),
-          err ? h('div', { className: 'dvk-note err' }, `出错了：${err}`) : null,
           !cfg && !err ? h('div', { className: 'dvk-note' }, '正在读取配置…') : null,
         ),
 
@@ -425,6 +424,7 @@ window.__ModuleLoader__.load({
               }),
             ),
           ),
+          err ? h('div', { className: 'dvk-note err' }, `出错了：${err}`) : null,
         ),
 
         h(

@@ -31,6 +31,7 @@ const FILES = [
   'lib/transnet-worker.mjs',
   'lib/ocr-det-worker.mjs',
   'lib/cpu.mjs',
+  'tools/calibrate.mjs',
 ]
 
 const BANNER = [
