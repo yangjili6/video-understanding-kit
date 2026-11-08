@@ -1,54 +1,46 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="980" height="1090" viewBox="0 0 980 1090">
-<rect width="980" height="1090" fill="#0f1419"/>
-<text x="490" y="42" font-size="20" font-weight="600" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">视觉强制执行工作流（ADR-0011）</text>
-<text x="490" y="66" font-size="13" font-weight="400" fill="#8b949e" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">LLM 不再决定「要不要看图」——由插件编排步骤，账本记录看过什么</text>
-<rect x="290" y="92" width="400" height="54" rx="10" fill="#161d26" stroke="#2a3644" stroke-width="1.5"/>
-<text x="490" y="118" font-size="15" font-weight="500" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">用户提出视频分析任务</text>
-<text x="490" y="136" font-size="12" font-weight="400" fill="#8b949e" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">video_analyze(video)</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="900" viewBox="0 0 980 900">
+<rect width="980" height="900" fill="#0f1419"/>
+<text x="490" y="46" font-size="20" font-weight="600" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">视觉强制执行工作流（ADR-0011）</text>
+<text x="490" y="72" font-size="13" font-weight="400" fill="#8b949e" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">LLM 不再决定「要不要看图」——由插件编排步骤，账本记录看过什么</text>
+<rect x="280" y="100" width="420" height="56" rx="10" fill="#161d26" stroke="#2a3644" stroke-width="1.5"/>
+<text x="490" y="126" font-size="15" font-weight="500" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">用户提出视频分析任务</text>
+<text x="490" y="145" font-size="12" font-weight="400" fill="#8b949e" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">video_analyze(video)</text>
 <defs><marker id="ah6" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
-<line x1="490" y1="146" x2="490" y2="186" stroke="#8b949e" stroke-width="1.6" marker-end="url(#ah6)"/>
-<rect x="240" y="186" width="500" height="96" rx="10" fill="#161d26" stroke="#4a9eff" stroke-width="1.5"/>
-<text x="490" y="214" font-size="16" font-weight="600" fill="#4a9eff" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">Orchestrator · 任务编排器</text>
-<text x="490" y="240" font-size="13" font-weight="400" fill="#8b949e" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">由插件控制，不交给 LLM 自主决定</text>
-<text x="490" y="262" font-size="12.5" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">建任务 · 定采样策略 · 只交出 taskId 与前 3 页导航</text>
+<line x1="490" y1="156" x2="490" y2="196" stroke="#8b949e" stroke-width="1.6" marker-end="url(#ah6)"/>
+<rect x="230" y="196" width="520" height="100" rx="10" fill="#161d26" stroke="#4a9eff" stroke-width="1.5"/>
+<text x="490" y="226" font-size="16" font-weight="600" fill="#4a9eff" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">Orchestrator · 任务编排器</text>
+<text x="490" y="252" font-size="13" font-weight="400" fill="#8b949e" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">由插件控制，不交给 LLM 自主决定</text>
+<text x="490" y="276" font-size="12.5" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">建任务 · 定采样策略 · 只交出 taskId 与前 3 页导航</text>
 <defs><marker id="ah12" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
-<line x1="490" y1="282" x2="490" y2="316" stroke="#8b949e" stroke-width="1.6" marker-end="url(#ah12)"/>
-<rect x="90" y="316" width="380" height="190" rx="10" fill="#161d26" stroke="#3fb950" stroke-width="1.5"/>
-<text x="280" y="346" font-size="16" font-weight="600" fill="#3fb950" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">视觉通道</text>
-<text x="280" y="368" font-size="12" font-weight="400" fill="#3fb950" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">强制执行</text>
-<text x="280" y="400" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 抽帧 / 网格分页</text>
-<text x="280" y="426" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 场景与镜头切分</text>
-<text x="280" y="452" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· video_look 逐页看图</text>
-<text x="280" y="478" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 账本记账 opened[]</text>
-<rect x="510" y="316" width="380" height="190" rx="10" fill="#161d26" stroke="#2a3644" stroke-width="1.5"/>
-<text x="700" y="346" font-size="16" font-weight="600" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">文本通道</text>
-<text x="700" y="368" font-size="12" font-weight="400" fill="#8b949e" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">辅助执行</text>
-<text x="700" y="400" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· ASR 语音识别</text>
-<text x="700" y="426" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· PP-OCR 硬字幕</text>
-<text x="700" y="452" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 时间戳对齐</text>
-<text x="700" y="478" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 只随 video_look 交付</text>
+<line x1="490" y1="296" x2="490" y2="336" stroke="#8b949e" stroke-width="1.6" marker-end="url(#ah12)"/>
+<rect x="90" y="336" width="380" height="200" rx="10" fill="#161d26" stroke="#3fb950" stroke-width="1.5"/>
+<text x="280" y="368" font-size="16" font-weight="600" fill="#3fb950" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">视觉通道</text>
+<text x="280" y="391" font-size="12" font-weight="400" fill="#3fb950" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">强制执行</text>
+<text x="280" y="426" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 抽帧 / 网格分页</text>
+<text x="280" y="452" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 场景与镜头切分</text>
+<text x="280" y="478" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· video_look 逐页看图</text>
+<text x="280" y="504" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 账本记账 opened[]</text>
+<rect x="510" y="336" width="380" height="200" rx="10" fill="#161d26" stroke="#2a3644" stroke-width="1.5"/>
+<text x="700" y="368" font-size="16" font-weight="600" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">文本通道</text>
+<text x="700" y="391" font-size="12" font-weight="400" fill="#8b949e" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">辅助执行</text>
+<text x="700" y="426" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· ASR 语音识别</text>
+<text x="700" y="452" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· PP-OCR 硬字幕</text>
+<text x="700" y="478" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 时间戳对齐</text>
+<text x="700" y="504" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 只随 video_look 交付</text>
 <defs><marker id="ah28" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
-<line x1="280" y1="506" x2="370" y2="536" stroke="#8b949e" stroke-width="1.6" marker-end="url(#ah28)"/>
+<line x1="280" y1="536" x2="360" y2="576" stroke="#8b949e" stroke-width="1.6" marker-end="url(#ah28)"/>
 <defs><marker id="ah30" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
-<line x1="700" y1="506" x2="610" y2="536" stroke="#8b949e" stroke-width="1.6" marker-end="url(#ah30)"/>
-<rect x="190" y="536" width="600" height="132" rx="10" fill="#12201a" stroke="#3fb950" stroke-width="1.5"/>
-<text x="490" y="566" font-size="16" font-weight="600" fill="#3fb950" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">Vision Gate · 视觉执行门</text>
-<text x="490" y="588" font-size="12" font-weight="400" fill="#3fb950" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">必须通过</text>
-<text x="220" y="616" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 看过页数 ≥ max(3, 总页数 × 30%)</text>
-<text x="220" y="640" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 覆盖关键转场页</text>
-<text x="220" y="664" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 只看第 1 页就下全片结论 → 拒绝</text>
+<line x1="700" y1="536" x2="620" y2="576" stroke="#8b949e" stroke-width="1.6" marker-end="url(#ah30)"/>
+<rect x="180" y="576" width="620" height="152" rx="10" fill="#12201a" stroke="#3fb950" stroke-width="1.5"/>
+<text x="490" y="608" font-size="16" font-weight="600" fill="#3fb950" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">Vision Gate · 视觉执行门</text>
+<text x="490" y="632" font-size="12" font-weight="400" fill="#3fb950" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">必须通过</text>
+<text x="490" y="662" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 看过页数 ≥ max(3, 总页数 × 30%)</text>
+<text x="490" y="688" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 覆盖关键转场页</text>
+<text x="490" y="714" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 只看第 1 页就下全片结论 → 拒绝</text>
 <defs><marker id="ah38" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
-<line x1="490" y1="668" x2="490" y2="708" stroke="#8b949e" stroke-width="1.6" marker-end="url(#ah38)"/>
-<rect x="270" y="708" width="440" height="84" rx="10" fill="#161d26" stroke="#2a3644" stroke-width="1.5"/>
-<text x="490" y="738" font-size="16" font-weight="500" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">LLM 综合推理</text>
-<text x="490" y="762" font-size="13" font-weight="400" fill="#8b949e" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">基于「真的看过的画面」+ 随页取回的字幕</text>
-<text x="490" y="780" font-size="12" font-weight="400" fill="#8b949e" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">video_report(taskId, conclusion)</text>
-<rect x="40" y="826" width="900" height="130" rx="10" fill="#1a1410" stroke="#8a5a2b" stroke-width="1.5"/>
-<text x="70" y="856" font-size="15" font-weight="600" fill="#e3a35f" text-anchor="start" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">这条方案的边界</text>
-<text x="70" y="884" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">video_look 被调用 ≠ 真的看了图。read_image 是内置工具，插件感知不到。</text>
-<text x="70" y="908" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">能做到的上限：把图和字绑进同一个返回，让「拿字」必然经过图。</text>
-<text x="70" y="932" font-size="13" font-weight="400" fill="#8b949e" text-anchor="start" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">再往下要强制，只能由宿主提供「工具间已读回执」——不是插件能解决的。</text>
-<rect x="40" y="986" width="900" height="74" rx="10" fill="#161d26" stroke="#2a3644" stroke-width="1.5"/>
-<text x="70" y="1012" font-size="13" font-weight="600" fill="#e6edf3" text-anchor="start" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">实测（2026-11-08）</text>
-<text x="70" y="1036" font-size="13" font-weight="400" fill="#8b949e" text-anchor="start" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">2/34 页提交 → rejected「至少需要 11 页」　·　11/34 页提交 → passed</text>
+<line x1="490" y1="728" x2="490" y2="762" stroke="#8b949e" stroke-width="1.6" marker-end="url(#ah38)"/>
+<rect x="260" y="762" width="460" height="86" rx="10" fill="#161d26" stroke="#2a3644" stroke-width="1.5"/>
+<text x="490" y="794" font-size="16" font-weight="500" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">LLM 综合推理</text>
+<text x="490" y="818" font-size="13" font-weight="400" fill="#8b949e" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">基于「真的看过的画面」+ 随页取回的字幕</text>
+<text x="490" y="836" font-size="12" font-weight="400" fill="#8b949e" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">video_report(taskId, conclusion)</text>
 </svg>
