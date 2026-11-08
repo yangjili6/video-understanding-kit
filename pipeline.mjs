@@ -17,6 +17,7 @@ import { Worker } from 'node:worker_threads'
 import { join } from 'node:path'
 import { transcribeVideo } from './asr.mjs'
 import { detectCuts } from './lib/transnet-lib.mjs'
+import { dedupPages, setDedupTmp } from './lib/dedup.mjs'
 import { extractSubtitles, dumpStageTiming, resetStageTiming } from './subs.mjs'
 
 // ---------------------------------------------------------------- 参数
@@ -705,6 +706,18 @@ async function main() {
     console.log('\n✅ 断言全部通过（帧全进页 / 组时长兜底 / 格位无冲突 / 页不超帧）')
   }
 
+  // 网格去重（ADR-0012）：全图 pHash 初筛 → 局部复核 → 标记可去重页。
+  // 注意：这里只做标记，不物理删除 pages —— 门禁、账本、原始索引都还要用。
+  let dedupResult = null
+  try {
+    setDedupTmp(join(OUT, '.dedup-tmp'))
+    const allPages = groups.flatMap((g) => g.pages.map((pg) => ({ ...pg, groupId: g.id })))
+    dedupResult = dedupPages(allPages)
+    console.log(`\n[dedup] 全图+局部复核：${dedupResult.stats.total} 页 → 保留 ${dedupResult.stats.kept}，标记去重 ${dedupResult.stats.dropped}（${(dedupResult.stats.ratio * 100).toFixed(1)}%）`)
+  } catch (e) {
+    console.log('[dedup] 跳过（' + String(e && e.message || e) + '）')
+  }
+
   const index = {
     version: '5.2-proto',
     timings,
@@ -749,6 +762,12 @@ async function main() {
     detWorkers: Number.isFinite(Number(subs.detWorkers)) ? Number(subs.detWorkers) : null,
     loadLevel: subs.loadLevel ?? null,
     tempC: Number.isFinite(Number(subs.tempC)) ? Number(subs.tempC) : null,
+    dedup: dedupResult ? {
+      globalSim: 6, roiChange: 10,
+      kept: dedupResult.kept.map((x) => ({ page: x.page, file: x.file, reason: x.dedupReason })),
+      dropped: dedupResult.dropped.map((x) => ({ page: x.page, file: x.file, reason: x.dedupReason })),
+      stats: dedupResult.stats,
+    } : null,
     coverage: buildCoverage(duration, cues),
     checks: { ok: problems.length === 0, problems },
   }
