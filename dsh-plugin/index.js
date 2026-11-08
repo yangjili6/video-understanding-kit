@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url'
 import { detectCpuTopology } from './lib/videokit/lib/cpu.mjs'
 
 export const name = 'dsh-video-kit'
-export const version = '0.2.3'
+export const version = '0.2.4'
 // webServer 只用来给侧栏面板提供配置读写（/dsh-video-kit-api）。
 export const inject = ['tools', 'webServer']
 
