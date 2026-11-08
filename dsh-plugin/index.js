@@ -512,6 +512,9 @@ async function runCalibrationNow() {
   if (!existsSync(script)) throw new Error(`找不到标定脚本：${script}`)
   const outFile = join(dirname(script), '..', 'tmp', 'calibrate-result.json')
   await new Promise((resolvePromise, reject) => {
+    // 标定失败时只报「退出码 1」等于把人蒙在鼓里（2026-11-08 踩过：
+    // 真实原因是脚本的 Android 默认视频路径不存在）。留住 stderr 尾部透给面板。
+    let stderrTail = ''
     const child = spawn(process.execPath, [script, '--max', '16', '--frames', '48'], {
       cwd: dirname(script),
       env: { ...process.env, REPS: process.env.REPS || '3' },
@@ -526,14 +529,18 @@ async function runCalibrationNow() {
       const m = String(buf).match(/\[progress\] (\d+)\/(\d+)/)
       if (m) { calibProgress.done = Number(m[1]); calibProgress.total = Number(m[2]) }
     })
-    child.stderr.on('data', () => { /* 标定脚本的错误走退出码判定 */ })
+    child.stderr.on('data', (buf) => { stderrTail = (stderrTail + String(buf)).slice(-1200) })
     const timer = setTimeout(() => { try { child.kill('SIGKILL') } catch {} ; reject(new Error('标定超时（10 分钟）')) }, 10 * 60 * 1000)
     child.on('error', (e) => { clearTimeout(timer); reject(e) })
     child.on('close', (code) => {
       clearTimeout(timer)
       calibProgress.running = false
       if (code === 0) resolvePromise()
-      else { calibProgress.error = '退出码 ' + code; reject(new Error('标定脚本退出码 ' + code)) }
+      else {
+        const detail = stderrTail.split('\n').map((s) => s.trim()).filter(Boolean).slice(-3).join(' | ')
+        calibProgress.error = detail ? `退出码 ${code}：${detail}` : `退出码 ${code}`
+        reject(new Error(`标定脚本退出码 ${code}${detail ? '：' + detail : ''}`))
+      }
     })
   })
   calibProgress.running = false
