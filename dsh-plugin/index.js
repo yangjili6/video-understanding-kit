@@ -1149,7 +1149,7 @@ export function apply(ctx) {
           gridsDir,
           // 前 12 页覆盖整条时间线；要看某一段的细节再按 gridsDir 取其余页
           grids: gridFiles.filter((f) => !/-sheet-\d+\.jpg$/.test(f)).slice(0, 3),
-          gridsCount: gridFiles.length,
+          gridsCount: (idx.groups || []).reduce((n, g) => n + (g.pages || []).length, 0),
           indexJson: indexPath,
           // 分段耗时（秒）：TransNet / ASR / 补帧 / 分页各占多少，用于定位下一次该压哪里
           timings: idx.timings || null,
