@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="972" viewBox="0 0 640 972">
+<rect width="640" height="972" fill="#0f1419"/>
+<text x="320" y="46" font-size="22" font-weight="700" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">OCR 候选区间 + 画面文字</text>
+<text x="320" y="72" font-size="15" font-weight="400" fill="#8b949e" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">ADR-0013</text>
+<rect x="24" y="92" width="592" height="58" rx="10" fill="#161d26" stroke="#2a3644" stroke-width="1.6"/>
+<text x="320" y="118" font-size="17" font-weight="600" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">解码帧（全片）</text>
+<text x="320" y="138" font-size="13" font-weight="400" fill="#8b949e" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">固定帧率，带时间戳</text>
+<defs><marker id="a6" markerWidth="11" markerHeight="11" refX="8" refY="4" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#8b949e"/></marker></defs>
+<line x1="320" y1="150" x2="320" y2="178" stroke="#8b949e" stroke-width="2.4" marker-end="url(#a6)"/>
+<rect x="24" y="178" width="592" height="92" rx="10" fill="#161d26" stroke="#4a9eff" stroke-width="1.6"/>
+<text x="320" y="208" font-size="17" font-weight="600" fill="#4a9eff" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">稀疏探测 16 帧</text>
+<text x="320" y="232" font-size="14" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">保留文字框 + 时间点</text>
+<text x="320" y="254" font-size="13" font-weight="400" fill="#8b949e" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">不是只回答「有没有字」</text>
+<defs><marker id="a12" markerWidth="11" markerHeight="11" refX="8" refY="4" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#8b949e"/></marker></defs>
+<line x1="320" y1="270" x2="320" y2="298" stroke="#8b949e" stroke-width="2.4" marker-end="url(#a12)"/>
+<rect x="24" y="298" width="592" height="88" rx="10" fill="#161d26" stroke="#3fb950" stroke-width="1.6"/>
+<text x="320" y="328" font-size="17" font-weight="600" fill="#3fb950" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">候选区间</text>
+<text x="320" y="352" font-size="14" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">命中帧前后各留半窗 → 合并重叠</text>
+<text x="320" y="374" font-size="13" font-weight="400" fill="#8b949e" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">30 秒漫画：60 帧 → 25 帧（省 58%）</text>
+<defs><marker id="a18" markerWidth="11" markerHeight="11" refX="8" refY="4" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#8b949e"/></marker></defs>
+<line x1="320" y1="386" x2="320" y2="414" stroke="#8b949e" stroke-width="2.4" marker-end="url(#a18)"/>
+<rect x="24" y="414" width="592" height="148" rx="10" fill="#12201a" stroke="#3fb950" stroke-width="1.6"/>
+<text x="320" y="444" font-size="16" font-weight="600" fill="#3fb950" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">只对候选区间全量检测</text>
+<text x="320" y="472" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">检测拆出来：detect 找框 → recognizeCrop 读字</text>
+<text x="320" y="496" font-size="13" font-weight="400" fill="#8b949e" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">贵的只有 recognizeCrop</text>
+<text x="320" y="520" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">预算 15s（SUBS_OCR_BUDGET_MS）</text>
+<text x="320" y="540" font-size="13" font-weight="400" fill="#e3a35f" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">耗尽如实退出，不假装跑完</text>
+<defs><marker id="a26" markerWidth="11" markerHeight="11" refX="8" refY="4" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#8b949e"/></marker></defs>
+<line x1="320" y1="562" x2="320" y2="590" stroke="#8b949e" stroke-width="2.4" marker-end="url(#a26)"/>
+<rect x="24" y="590" width="592" height="62" rx="10" fill="#161d26" stroke="#2a3644" stroke-width="1.6"/>
+<text x="320" y="616" font-size="17" font-weight="600" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">分成两条输出</text>
+<text x="320" y="638" font-size="13" font-weight="400" fill="#8b949e" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">职责不同，物理分开</text>
+<rect x="24" y="680" width="288" height="128" rx="10" fill="#161d26" stroke="#3fb950" stroke-width="1.6"/>
+<text x="168" y="710" font-size="16" font-weight="600" fill="#3fb950" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">subs</text>
+<text x="168" y="734" font-size="14" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">硬字幕</text>
+<text x="168" y="758" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 底部居中</text>
+<text x="168" y="778" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 跨帧稳定</text>
+<text x="168" y="798" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 进字幕时间轴</text>
+<rect x="328" y="680" width="288" height="128" rx="10" fill="#161d26" stroke="#e3a35f" stroke-width="1.6"/>
+<text x="472" y="710" font-size="16" font-weight="600" fill="#e3a35f" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">screenText</text>
+<text x="472" y="734" font-size="14" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">画面文字</text>
+<text x="472" y="758" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 气泡/招牌/界面</text>
+<text x="472" y="778" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 不进字幕时间轴</text>
+<text x="472" y="798" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">· 状态变化触发识别</text>
+<defs><marker id="a43" markerWidth="11" markerHeight="11" refX="8" refY="4" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#8b949e"/></marker></defs>
+<line x1="320" y1="808" x2="320" y2="836" stroke="#8b949e" stroke-width="2.4" marker-end="url(#a43)"/>
+<rect x="24" y="836" width="592" height="96" rx="10" fill="#1a1410" stroke="#e3a35f" stroke-width="1.6"/>
+<text x="320" y="866" font-size="15" font-weight="600" fill="#e3a35f" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">边界：短字幕仍可能漏</text>
+<text x="320" y="890" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">稀疏采样抓不住闪现的字</text>
+<text x="320" y="910" font-size="13" font-weight="400" fill="#8b949e" text-anchor="middle" font-family="system-ui, -apple-system, PingFang SC, Noto Sans CJK SC, sans-serif">要保证不漏，就得逐帧级处理并接受成本</text>
+</svg>

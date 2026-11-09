@@ -18,6 +18,8 @@
 | [ADR-0009 并发度标定](ADR-0009-concurrency-calibration.md) | 实测选档规则（T(n)≤1.08×min T 的最小 n）、本次推荐 3 路、以及「四舍五入不能参与阈值判断」的教训 |
 | [ADR-0010 温度保护](ADR-0010-thermal-protection.md) | 温度优先于吞吐量；电池温度分级降档（38/40/42℃ → 不限/3/2/1 路）；标定是冷机峰值、实际是持续负载 |
 | [ADR-0011 视觉强制执行](ADR-0011-vision-gate.md) | 把视觉分析做成强制工作流：Orchestrator（编排）+ Vision Gate（门禁）+ Evidence Ledger（账本在服务端）；不看图拿不到结论 |
+| [ADR-0012 网格去重](ADR-0012-grid-dedup.md) | 全图 pHash 初筛 + 局部区域复核；串联改直接复核代表页；ROI 内存切片 46s→4.7s；对漫画分镜基本无效 |
+| [ADR-0013 OCR 候选区间](ADR-0013-ocr-candidate-windows.md) | 撤销「有字就全扫」，改候选区间路由；硬字幕与画面文字双路输出；状态变化触发识别；84.6s→46.2s |
 | [交接：PC 端标定](HANDOFF-calibration-pc.md) | 给电脑上的 AI：复现标定、回答 5 个问题（并行效率/瓶颈/worker 线程数/帧数影响） |
 | [实验 2026-10-30](EXPERIMENT-2026-10-30-asr-ocr.md) | OCR 坐标 bug、OCR 预探测、ASR 分段/阈值/降噪的七组对照 |
 | [实验 2026-11-03](EXPERIMENT-2026-11-03-frame-detail.md) | 三组对照：网格够用 / 关键帧没采到 / 补抽有效但峰值错 |
@@ -52,3 +54,5 @@
 
 - [OCR 并发与温度决策](diagrams/pipeline-core@2x.png) — 由 `tools/draw-core-svg.mjs` 生成；改数据后重跑脚本即可更新。
 - [视觉强制执行工作流](diagrams/vision-gate@2x.png) — 由 `tools/draw-vision-gate-svg.mjs` 生成；含方案边界与两次门禁实测。
+- [网格页去重](diagrams/grid-dedup@2x.png) — 由 `tools/draw-dedup-svg.mjs` 生成。
+- [OCR 候选区间与画面文字](diagrams/ocr-pipeline@2x.png) — 由 `tools/draw-ocr-svg.mjs` 生成。
