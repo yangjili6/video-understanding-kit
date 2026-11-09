@@ -792,7 +792,56 @@ async function main() {
     console.log('[dedup] 跳过（' + String(e && e.message || e) + '）')
   }
 
-  const index = {
+  /**
+ * 关联层（ADR-0015）：把视觉与文字按时间轴串起来，谁都不改谁。
+ *
+ * frames      frameId、timestamp、page、group、cell
+ * visualGroups groupId、memberFrameIds（含被合并的帧，不因去重丢失）
+ * pages       pageId、groupId、memberFrameIds、时间段
+ * ocrEvents   文字事件，按时间重叠关联到页；一条文字可关联多页，一页可有多条文字
+ */
+function buildRelation(groupsList, subsList) {
+  const frames = []
+  const visualGroups = []
+  const pages = []
+
+  for (const g of groupsList || []) {
+    const gFrames = []
+    for (const pg of g.pages || []) {
+      const ts = (pg.frames || []).map((f) => Number(f.t)).filter(Number.isFinite)
+      const from = ts.length ? Math.min(...ts) : 0
+      const to = ts.length ? Math.max(...ts) : 0
+      const memberFrameIds = (pg.frames || []).map((f) => f.srcFrameId).filter(Boolean)
+      pages.push({ pageId: pg.page, groupId: g.id, memberFrameIds, from, to })
+      for (const f of pg.frames || []) {
+        frames.push({ frameId: f.srcFrameId || null, timestamp: Number(f.t), page: pg.page, group: g.id, cell: f.cell || null })
+        if (f.srcFrameId) gFrames.push(f.srcFrameId)
+      }
+    }
+    // 代表帧取组内第一页的第一帧；成员帧保留全部（含将被去重合并的）
+    visualGroups.push({
+      groupId: g.id,
+      representativeFrameId: g.pages?.[0]?.frames?.[0]?.srcFrameId ?? null,
+      memberFrameIds: gFrames,
+    })
+  }
+
+  // 文字事件：按时间重叠关联到页
+  const ocrEvents = (subsList || []).map((x, i) => {
+    const start = Number(x.start), end = Number(x.end)
+    const hitPages = pages.filter((pg) => end >= pg.from - 0.5 && start <= pg.to + 0.5)
+    return {
+      eventId: `ocr-${String(i + 1).padStart(4, '0')}`,
+      start, end, text: String(x.text || ''),
+      sourceFrameIds: hitPages.flatMap((pg) => pg.memberFrameIds).slice(0, 12),
+      pages: hitPages.map((pg) => pg.pageId),
+    }
+  })
+
+  return { frames, visualGroups, pages, ocrEvents }
+}
+
+const index = {
     version: '5.2-proto',
     timings,
     video: VIDEO,
@@ -826,6 +875,8 @@ async function main() {
     // 画面文字（气泡/招牌）：不属于字幕时间轴，单独一列（ADR-0013）
     screenText: (subs.screenText || []).map((x) => ({ t: x.t, text: x.text, conf: x.conf })),
     subsStatus,  // disabled | failed | completed（ADR-0015）
+    // 关联层（ADR-0015）：视觉与文字各走各的，这里是按时间轴的只读关联结果
+    relation: buildRelation(groups, subs),
     subs: subs.map((x) => ({
       start: x.start, end: x.end, t: x.t, text: x.text, conf: x.conf,
       review: (x.conf < 0.85 || /[0-9]/.test(x.text) || x.text.length < 3) ? [x.conf < 0.85 ? 'low_conf' : null, /[0-9]/.test(x.text) ? 'digits' : null, x.text.length < 3 ? 'short' : null].filter(Boolean) : null,
