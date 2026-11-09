@@ -769,7 +769,7 @@ async function main() {
     tempC: Number.isFinite(Number(subs.tempC)) ? Number(subs.tempC) : null,
     dedup: dedupResult ? {
       globalSim: 6, roiChange: 10,
-      kept: dedupResult.kept.map((x) => ({ page: x.page, file: x.file, reason: x.dedupReason })),
+      kept: dedupResult.kept.map((x) => ({ page: x.page, file: x.file, reason: x.dedupReason, visualGroup: x.visualGroup ?? null })),
       dropped: dedupResult.dropped.map((x) => ({ page: x.page, file: x.file, reason: x.dedupReason, representativePage: x.representativePage ?? null })),
       stats: dedupResult.stats,
     } : null,

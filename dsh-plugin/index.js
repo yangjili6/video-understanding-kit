@@ -1157,7 +1157,8 @@ export function apply(ctx) {
           // 去重结果摘要：只给统计与页名，不给正文（正文要 video_look 按页取）
           dedup: idx.dedup ? {
             stats: idx.dedup.stats,
-            kept: (idx.dedup.kept || []).map((x) => x.page),
+            kept: (idx.dedup.kept || []).filter((x) => !x.visualGroup).map((x) => x.page),
+            grouped: (idx.dedup.kept || []).filter((x) => x.visualGroup).map((x) => ({ page: x.page, group: x.visualGroup, reason: x.reason ?? null })),
             dropped: (idx.dedup.dropped || []).map((x) => ({ page: x.page, representativePage: x.representativePage ?? null })),
           } : null,
           detWorkers: Number.isFinite(idx.detWorkers) ? idx.detWorkers : null,
@@ -1228,6 +1229,7 @@ export function apply(ctx) {
         const droppedMap = new Map((dd?.dropped || []).map((x) => [x.page, x]))
         const pageName = pg.page
         const isKept = keptSet.has(pageName)
+        const groupInfo = (dd?.kept || []).find((x) => x.page === pageName && x.visualGroup) || null
         const dropInfo = droppedMap.get(pageName) || null
         if (dropInfo && args.includeDropped !== true) {
           return {
@@ -1256,7 +1258,8 @@ export function apply(ctx) {
           asr: asrIn.map((c) => ({ s: Number(c.s), e: Number(c.e), text: c.text })),
           openedCount: led.opened.length,
           dedup: dd ? {
-            role: isKept ? 'kept' : 'dropped',
+            role: groupInfo ? 'visualGroup' : (isKept ? 'kept' : 'dropped'),
+            group: groupInfo?.visualGroup ?? null,
             representativePage: dropInfo?.representativePage || null,
             reason: dropInfo?.reason ?? null,
           } : null,
@@ -1293,7 +1296,8 @@ export function apply(ctx) {
         const led = readLedger(dir)
         const opened = led.opened || []
         const total = pages.length
-        const need = Math.max(3, Math.ceil(total * 0.3))
+        const countableTotal = allPageNames.filter((n) => !droppedPages.includes(n)).length
+        const need = Math.max(3, Math.ceil(countableTotal * 0.3))
 
         // 三组指标分开报（霁璃建议）：不拿「有映射」折算「已查看」
         const dd = idx.dedup || null
@@ -1303,7 +1307,10 @@ export function apply(ctx) {
         const viewedNames = Object.keys(led.viewed || {})
         const startedAt = led.createdAt || null
 
-        const originalsViewed = opened.length
+        // 只有 kept / grouped 算数；dropped 不参与门禁
+        const countablePages = new Set([...keptPages, ...allPageNames.filter((n) => !droppedPages.includes(n))])
+        const countableViewed = opened.filter((i) => countablePages.has(pages[i]?.page)).length
+        const originalsViewed = countableViewed
         const keptViewed = keptPages.filter((n) => viewedNames.includes(n)).length
         const droppedViewed = droppedPages.filter((n) => viewedNames.includes(n)).length
         const unmapped = droppedPages.filter((n) => {
@@ -1313,7 +1320,8 @@ export function apply(ctx) {
 
         const coverage = {
           // 第一组：原始页直接查看率 —— 这才是「看全」的验收口径，分母不缩
-          originals: { viewed: originalsViewed, total, rate: +(originalsViewed / total).toFixed(3) },
+          countable: { viewed: originalsViewed, total: countableTotal, rate: +(originalsViewed / Math.max(1, countableTotal)).toFixed(3) },
+          droppedExcluded: droppedPages.length,
           // 第二组：代表页查看率（去重后的首轮阅读成本）
           kept: keptPages.length ? { viewed: keptViewed, total: keptPages.length, rate: +(keptViewed / keptPages.length).toFixed(3) } : null,
           // 第三组：去重映射完整性 —— 只说明「可追溯」，不折算成「已查看」
@@ -1326,9 +1334,9 @@ export function apply(ctx) {
           return {
             ok: false,
             gate: 'rejected',
-            reason: '原始页视觉证据不足：直接查看 ' + originalsViewed + '/' + total + ' 页，至少需要 ' + need + ' 页',
+            reason: '代表页视觉证据不足：看过 ' + originalsViewed + '/' + countableTotal + ' 页（dropped 不计入），至少需要 ' + need + ' 页',
             coverage,
-            summary: '原始页直接查看 ' + originalsViewed + '/' + total +
+            summary: '代表页直接查看 ' + originalsViewed + '/' + countableTotal +
               (keptPages.length ? '；代表页查看 ' + keptViewed + '/' + keptPages.length : '') +
               (droppedPages.length ? '；另有 ' + (droppedPages.length - droppedViewed) + ' 页视觉近似暂未查看' : ''),
             missingFirst: missing,
