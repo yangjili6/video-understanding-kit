@@ -123,6 +123,7 @@ export function dedupPages(pages, opts = {}) {
     let hash = null
     let action = 'keep'
     let reason = ''
+    let subTextChanged = false
     try {
       hash = phash(p.file)
       const d = hamming(repHash, hash)
@@ -136,7 +137,14 @@ export function dedupPages(pages, opts = {}) {
           const rd = hamming(regions[k], repRegions[k])
           if (rd > maxRoi) { maxRoi = rd; hot = k }
         }
-        if (maxRoi > roiChange) {
+        // 字幕判据：画面几乎一样，但这一页的字幕和代表页不同 → 内容在推进，不能算重复
+        const subNow = String(p.subText || '')
+        const subRep = String(pages[repIndex].subText || '')
+        if (subNow !== subRep) {
+          action = 'keep'
+          reason = `字幕变化（${subRep.slice(0, 12) || '无'}→${subNow.slice(0, 12) || '无'}），不判重复`
+          subTextChanged = true
+        } else if (maxRoi > roiChange) {
           // 全图接近但局部有变：疑似同一视觉段，归组但不删（visualGroup）
           action = 'group'
           reason = `局部 ${hot} 变化 ${maxRoi}（疑似同段，对比代表页 ${pages[repIndex].page}）`

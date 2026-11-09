@@ -1296,14 +1296,15 @@ export function apply(ctx) {
         const led = readLedger(dir)
         const opened = led.opened || []
         const total = pages.length
-        const countableTotal = allPageNames.filter((n) => !droppedPages.includes(n)).length
-        const need = Math.max(3, Math.ceil(countableTotal * 0.3))
 
         // 三组指标分开报（霁璃建议）：不拿「有映射」折算「已查看」
         const dd = idx.dedup || null
         const keptPages = (dd?.kept || []).map((x) => x.page)
         const droppedPages = (dd?.dropped || []).map((x) => x.page)
         const allPageNames = pages.map((pg) => pg.page)
+        const countableTotal = allPageNames.filter((n) => !droppedPages.includes(n)).length
+        const need = Math.max(3, Math.ceil(countableTotal * 0.3))
+
         const viewedNames = Object.keys(led.viewed || {})
         const startedAt = led.createdAt || null
 
