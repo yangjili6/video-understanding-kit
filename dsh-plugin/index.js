@@ -1165,6 +1165,15 @@ export function apply(ctx) {
           loadLevel: idx.loadLevel ?? null,
           tempC: Number.isFinite(idx.tempC) ? idx.tempC : null,
           elapsedMs: Date.now() - t0,
+          // 把本次的 fullReview 落进账本：video_report 拿不到插件入参，只能读这里
+          ...(() => {
+            try {
+              const led0 = readLedger(outDir)
+              led0.fullReview = (args.fullReview ?? readFullReviewDefault()) === true
+              writeLedger(outDir, led0)
+            } catch { /* 记账失败不影响分析 */ }
+            return {}
+          })(),
           nextStep: (() => {
             const parts = ['**看图说话前必须先用 video_look 逐页看网格**：一页一次，图和该页的字幕在同一个返回里。']
             parts.push(`本次共 ${(idx.groups || []).reduce((n, g) => n + (g.pages || []).length, 0)} 页（taskId: ${basename(outDir)}）。`)
@@ -1304,7 +1313,7 @@ export function apply(ctx) {
         const allPageNames = pages.map((pg) => pg.page)
         const countableTotal = allPageNames.filter((n) => !droppedPages.includes(n)).length
         // 逐页全看开启时，门禁必须要求全覆盖，不能只数 30%
-        const fullReview = (() => { try { return !!loadConfig().fullReview } catch { return false } })()
+        const fullReview = (() => { try { if (typeof led.fullReview === 'boolean') return led.fullReview; return !!loadConfig().fullReview } catch { return false } })()
         const need = fullReview ? countableTotal : Math.max(3, Math.ceil(countableTotal * 0.3))
 
         const viewedNames = Object.keys(led.viewed || {})
