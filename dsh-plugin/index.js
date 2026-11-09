@@ -1182,7 +1182,7 @@ export function apply(ctx) {
             else parts.push('subs/asr 只是台词，不能代替画面。需要更细的帧再用 video_frame。')
             // 不提「全看已开启」——门禁按 ledger/config 的 fullReview 算，
             // 提示词另算一套值就会出现「提示说全看、验收按 30%」的分裂（2026-11-10 踩过）
-            const needHint = (() => { try { const d = (idx.dedup || {}); const dropped = new Set((d.dropped || []).map((x) => x.page)); const total = pages.length - dropped.size; const fr = (() => { try { const l = readLedger(outDir); if (typeof l.fullReview === 'boolean') return l.fullReview } catch {} try { return !!loadConfig().fullReview } catch { return false } })(); return fr ? total : Math.max(3, Math.ceil(total * 0.3)) } catch { return null } })()
+            const needHint = (() => { try { const d = (idx.dedup || {}); const dropped = new Set((d.dropped || []).map((x) => x.page)); const total = (idx.groups || []).reduce((n, g) => n + (g.pages || []).length, 0) - dropped.size; const fr = (() => { try { const l = readLedger(outDir); if (typeof l.fullReview === 'boolean') return l.fullReview } catch {} try { return !!loadConfig().fullReview } catch { return false } })(); return fr ? total : Math.max(3, Math.ceil(total * 0.3)) } catch { return null } })()
             if (needHint != null) parts.push('（本次门禁要求：至少查看 ' + needHint + ' 页）')
             return parts.join(' ')
           })(),
