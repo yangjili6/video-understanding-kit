@@ -833,15 +833,25 @@ function imagemagickBinDir() {
 }
 
 /** 异常退出可能残留下载目录；每次调用前清掉过期的，保证下载的视频不会长期留在磁盘 */
-async function sweepDownloads(maxAgeMs = 6 * 60 * 60 * 1000) {
+/** 下载目录清理：超过 24 小时删除；最多保留 3 条，新的顶掉最旧的 */
+async function sweepDownloads(maxAgeMs = 24 * 60 * 60 * 1000, maxKeep = 3) {
   const root = join(storageRoot(), 'downloads')
   try {
     const now = Date.now()
+    const entries = []
     for (const name of await readdir(root)) {
       const p = join(root, name)
       const st = await stat(p).catch(() => null)
-      if (st?.isDirectory() && now - st.mtimeMs > maxAgeMs) await rm(p, { recursive: true, force: true }).catch(() => {})
+      if (!st?.isDirectory()) continue
+      if (now - st.mtimeMs > maxAgeMs) {
+        await rm(p, { recursive: true, force: true }).catch(() => {})
+        continue
+      }
+      entries.push({ p, mtime: st.mtimeMs })
     }
+    // 还超量的，按修改时间保留最新的 maxKeep 条
+    entries.sort((a, b) => b.mtime - a.mtime)
+    for (const e of entries.slice(maxKeep)) await rm(e.p, { recursive: true, force: true }).catch(() => {})
   } catch { /* 目录不存在 */ }
 }
 
@@ -1020,7 +1030,16 @@ function gcStaleArtifacts() {
     }
     return removed
   }
-  report.downloads = sweep(join(storageRoot(), 'downloads'), 2 * 60 * 60 * 1000)
+  // 下载目录：24 小时后删；另外最多保留 3 条（新顶旧）—— 与 sweepDownloads 保持一致
+  const dlRoot = join(storageRoot(), 'downloads')
+  report.downloads = sweep(dlRoot, 24 * 60 * 60 * 1000)
+  try {
+    const rest = readdirSync(dlRoot)
+      .map((n) => { const p = join(dlRoot, n); try { const st = statSync(p); return st.isDirectory() ? { p, mtime: st.mtimeMs } : null } catch { return null } })
+      .filter(Boolean)
+      .sort((a, b) => b.mtime - a.mtime)
+    for (const e of rest.slice(3)) { rmSync(e.p, { recursive: true, force: true }); report.downloads += 1 }
+  } catch { /* 目录不存在 */ }
   report.out = sweep(join(storageRoot(), 'out'), 7 * 24 * 60 * 60 * 1000)
   return report
 }
@@ -1190,7 +1209,10 @@ export function apply(ctx) {
       } catch (e) {
         return { ok: false, error: String(e?.message || e) }
       } finally {
-        if (tmpDir) await rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+        // 下载的视频保留在 downloads/ 里：
+        // 清理交给 sweepDownloads（超过 24 小时删除，最多保留 3 条，新的顶掉最旧的）。
+        // 保留的理由：同一视频重复分析不用重新下载，也便于复测时用本地文件。
+        void tmpDir
       }
     },
   })
