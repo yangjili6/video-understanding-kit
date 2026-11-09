@@ -1070,8 +1070,9 @@ export function apply(ctx) {
       properties: {
         video: { type: 'string', description: '视频来源：本地路径 / B站视频链接（支持 b23.tv 短链）；暂不支持任意 HTTP 直链' },
         out: { type: 'string', description: '结果目录名称（可选；目录始终建在插件存储区内）' },
-        subs: { type: 'boolean', description: '是否提取硬字幕（PP-OCR）。不传则用侧栏面板配置（默认开）；画面无字时传 false 提速' },
-        asr: { type: 'boolean', description: '是否跑语音识别（本地 sherpa-onnx）。不传则用侧栏面板配置（默认关）。视频有配音但没有硬字幕时，务必传 true，否则会漏掉台词' },
+        // OCR(字幕) 与 ASR(语音) 不再开放为工具参数：一律走侧栏面板配置。
+        // 理由：agent 传参会架空面板开关——指挥官关了 OCR，agent 仍传 subs:true 照样跑。
+        // 需要改这两项请去面板设置，工具只反映当前配置。
         baseFps: { type: 'number', description: '基础抽帧率；不传则用面板配置（默认 5）' },
         fullReview: { type: 'boolean', description: '是否逐页查看所有网格：true=每张都看（准确但 token 消耗大），false/不传=用侧栏面板的默认值' },
       },
