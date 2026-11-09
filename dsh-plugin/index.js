@@ -1303,7 +1303,9 @@ export function apply(ctx) {
         const droppedPages = (dd?.dropped || []).map((x) => x.page)
         const allPageNames = pages.map((pg) => pg.page)
         const countableTotal = allPageNames.filter((n) => !droppedPages.includes(n)).length
-        const need = Math.max(3, Math.ceil(countableTotal * 0.3))
+        // 逐页全看开启时，门禁必须要求全覆盖，不能只数 30%
+        const fullReview = (() => { try { return !!loadConfig().fullReview } catch { return false } })()
+        const need = fullReview ? countableTotal : Math.max(3, Math.ceil(countableTotal * 0.3))
 
         const viewedNames = Object.keys(led.viewed || {})
         const startedAt = led.createdAt || null
@@ -1335,7 +1337,7 @@ export function apply(ctx) {
           return {
             ok: false,
             gate: 'rejected',
-            reason: '代表页视觉证据不足：看过 ' + originalsViewed + '/' + countableTotal + ' 页（dropped 不计入），至少需要 ' + need + ' 页',
+            reason: (fullReview ? '逐页全看模式已开启：需覆盖全部 ' + countableTotal + ' 页，当前看过 ' + originalsViewed + ' 页（dropped 不计入）' : '代表页视觉证据不足：看过 ' + originalsViewed + '/' + countableTotal + ' 页（dropped 不计入），至少需要 ' + need + ' 页'),
             coverage,
             summary: '代表页直接查看 ' + originalsViewed + '/' + countableTotal +
               (keptPages.length ? '；代表页查看 ' + keptViewed + '/' + keptPages.length : '') +
