@@ -20,6 +20,7 @@
 | [ADR-0011 视觉强制执行](ADR-0011-vision-gate.md) | 把视觉分析做成强制工作流：Orchestrator（编排）+ Vision Gate（门禁）+ Evidence Ledger（账本在服务端）；不看图拿不到结论 |
 | [ADR-0012 网格去重](ADR-0012-grid-dedup.md) | 全图 pHash 初筛 + 局部区域复核；串联改直接复核代表页；ROI 内存切片 46s→4.7s；对漫画分镜基本无效 |
 | [ADR-0013 OCR 候选区间](ADR-0013-ocr-candidate-windows.md) | 撤销「有字就全扫」，改候选区间路由；硬字幕与画面文字双路输出；状态变化触发识别；84.6s→46.2s |
+| [ADR-0014 字幕带投票（不适用）](ADR-0014-subtitle-band-vote.md) | 跨帧投票锁定稳定字幕带的尝试；位置多变的内容上聚出 0 条带、降级后仍检测全片；撤回跳检权限，只留诊断统计 |
 | [交接：PC 端标定](HANDOFF-calibration-pc.md) | 给电脑上的 AI：复现标定、回答 5 个问题（并行效率/瓶颈/worker 线程数/帧数影响） |
 | [实验 2026-10-30](EXPERIMENT-2026-10-30-asr-ocr.md) | OCR 坐标 bug、OCR 预探测、ASR 分段/阈值/降噪的七组对照 |
 | [实验 2026-11-03](EXPERIMENT-2026-11-03-frame-detail.md) | 三组对照：网格够用 / 关键帧没采到 / 补抽有效但峰值错 |

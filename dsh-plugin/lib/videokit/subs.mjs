@@ -41,7 +41,7 @@ function levenshtein(a, b) {
 // 2026-10-30 实测事故：1280×720 的片子按 ffprobe 原始分辨率算
 // `w > W*0.3`(384) 与 `y0 > H*0.65`(468)，而字幕框在 960×540 空间只有
 // w=192 / y0=450 —— 两条判定全崩，整片 420 帧 OCR 输出 0 条。
-const FRAME_W = 640
+const FRAME_W = 960
 
 /**
  * 从一帧的所有 OCR box 里挑出「字幕行」。
@@ -246,9 +246,36 @@ export async function extractSubtitles(video, outDir, opts = {}) {
       console.log('  [subs] 全程没有字幕候选，跳过全量 OCR（画面文字未扫描，不等于全片无文字）')
       return []
     }
-    // 候选区间：命中帧前后各留 1.5 个稀疏间隔的余量，合并重叠
+    // ② 区域投票：把命中框按位置聚类，反复出现在同一位置的才是「字幕带」
+    //    簇中心按 (x0/40, y0/20) 粗粒度量化，命中 >= 30% 的探测帧才算稳定带
+    const bandVotes = new Map()
+    for (const h of hits) {
+      const k = `${Math.round(h.box.x0 / 40)},${Math.round(h.box.y0 / 20)}`
+      const rec = bandVotes.get(k) || { n: 0, x0: 0, y0: 0, x1: 0, y1: 0 }
+      rec.n++; rec.x0 += h.box.x0; rec.y0 += h.box.y0; rec.x1 += h.box.x1; rec.y1 += h.box.y1
+      bandVotes.set(k, rec)
+    }
+    const subtitleBands = []
+    for (const rec of bandVotes.values()) {
+      if (rec.n / Math.max(1, hits.length) < 0.3) continue
+      subtitleBands.push({
+        x0: Math.round(rec.x0 / rec.n), y0: Math.round(rec.y0 / rec.n),
+        x1: Math.round(rec.x1 / rec.n), y1: Math.round(rec.y1 / rec.n),
+        votes: rec.n,
+      })
+    }
+    console.log(`  [subs] 字幕带投票：${hits.length} 个命中框聚成 ${subtitleBands.length} 条稳定带 ${subtitleBands.map((b) => `(${b.x0},${b.y0})x${b.votes}票`).join(' ')}`)
+
+    // ADR-0014：空间统计只做诊断，不参与筛选。
+    // 曾是 bandHits 筛选 → 候选区间，实测在位置多变的内容上聚出 0 条带、
+    // 降级后仍检测全片，没有收益。现在除非显式开 SUBS_BAND_FILTER=1，否则不筛。
+    const useBandFilter = process.env.SUBS_BAND_FILTER === '1'
+    const inBand = (box) => subtitleBands.length === 0 || subtitleBands.some((b) =>
+      Math.abs(box.x0 - b.x0) < 60 && Math.abs(box.y0 - b.y0) < 40)
+    const bandHits = useBandFilter ? hits.filter((h) => inBand(h.box)) : []
+    if (useBandFilter && subtitleBands.length) console.log(`  [subs] 带内命中 ${bandHits.length}/${hits.length}（SUBS_BAND_FILTER=1 实验开关）`)
     const halfWin = Math.max(1.5, (files.length / PROBE_N / FPS) * 1.5)
-    const raw = hits.map((h) => ({ from: Math.max(0, h.t - halfWin), to: Math.min(files.length / FPS, h.t + halfWin) }))
+    const raw = (bandHits.length ? bandHits : hits).map((h) => ({ from: Math.max(0, h.t - halfWin), to: Math.min(files.length / FPS, h.t + halfWin) }))
     raw.sort((a, b) => a.from - b.from)
     for (const w of raw) {
       const last = candidateWindows[candidateWindows.length - 1]

@@ -17,7 +17,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync, lstatSync } from 'node:fs'
 import { detectCpuTopology, ioConcurrency, detectLoad } from './lib/cpu.mjs'
 import { Worker } from 'node:worker_threads'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { transcribeVideo } from './asr.mjs'
 import { detectCuts } from './lib/transnet-lib.mjs'
 import { dedupPages, setDedupTmp } from './lib/dedup.mjs'
@@ -82,6 +82,7 @@ function probeSubtitleTracks(video) {
 // 把软字幕提取成 [{ start, end, text }]；失败返回 null，让调用方回退到 OCR
 function extractSoftSubtitles(video, outPath) {
   try {
+    mkdirSync(dirname(outPath), { recursive: true })
     run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', video,
       '-map', '0:s:0', '-c:s', 'srt', '-y', outPath])
     const raw = readFileSync(outPath, 'utf8')
