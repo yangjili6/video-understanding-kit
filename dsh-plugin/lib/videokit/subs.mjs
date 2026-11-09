@@ -335,6 +335,21 @@ export async function extractSubtitles(video, outDir, opts = {}) {
   // 判定：这一帧的框集合与上一状态比，数量和位置是否明显变化。
   const screenText = []
   try {
+    // ① 水印过滤：统计各位置簇出现频率，跨片高频的角落台标直接跳过
+    const posKey = (b) => `${Math.round(b.x0 / 60)},${Math.round(b.y0 / 40)}`
+    const freq = new Map()
+    let frameWithOthers = 0
+    for (const fr of frames) {
+      if (!fr.others || !fr.others.length) continue
+      frameWithOthers++
+      for (const b of fr.others) freq.set(posKey(b), (freq.get(posKey(b)) || 0) + 1)
+    }
+    const watermarkBoxes = new Set()
+    if (frameWithOthers >= 5) {
+      for (const [k, n] of freq) if (n / frameWithOthers > 0.4) watermarkBoxes.add(k)
+    }
+    console.log(`  [subs] 水印候选位置 ${watermarkBoxes.size} 处（跨 ${frameWithOthers} 帧占比 >40%）`)
+
     let lastKey = null
     let lastT = -99
     const keyOf = (boxes) => boxes
@@ -346,7 +361,9 @@ export async function extractSubtitles(video, outDir, opts = {}) {
       const key = keyOf(fr.others)
       // 状态变了才识别；同一状态最多再隔 6 秒复核一次（防检测抖动导致长时间不读）
       if (key === lastKey && fr.t - lastT < 6) continue
-      const box = fr.others.slice().sort((a, b) => (b.x1 - b.x0) * (b.y1 - b.y0) - (a.x1 - a.x0) * (a.y1 - a.y0))[0]
+      // 过滤掉水印位置的框，再取面积最大的
+      const cleanBoxes = fr.others.filter((b) => !watermarkBoxes.has(posKey(b)))
+      const box = cleanBoxes.slice().sort((a, b) => (b.x1 - b.x0) * (b.y1 - b.y0) - (a.x1 - a.x0) * (a.y1 - a.y0))[0]
       if (!box) continue
       lastKey = key
       lastT = fr.t
@@ -355,8 +372,14 @@ export async function extractSubtitles(video, outDir, opts = {}) {
         const clean = text.trim()
         if (clean.length >= 2 && conf >= 0.45) {
           // 与上一条相同就并进它，不重复输出
-          const prev = screenText[screenText.length - 1]
-          if (prev && prev.text === clean) { prev.end = Number(fr.t.toFixed(2)); continue }
+          // ② 文本去重：同一句（含 OCR 抖动变体）只记一次
+          const dupIdx = screenText.findIndex((x) => {
+            if (x.text === clean) return true
+            const a = x.text, b = clean
+            const dist = levenshtein(a, b)
+            return dist / Math.max(a.length, b.length, 1) < 0.2
+          })
+          if (dupIdx >= 0) { screenText[dupIdx].end = Number(fr.t.toFixed(2)); continue }
           screenText.push({ t: Number(fr.t.toFixed(2)), end: Number(fr.t.toFixed(2)), text: clean, conf: Number(conf.toFixed(2)) })
         }
       } catch { /* skip */ }
