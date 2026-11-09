@@ -63,6 +63,50 @@ const EPS = 0.001
 const run = (cmd, argv, opts = {}) =>
   execFileSync(cmd, argv, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], ...opts })
 
+// ---------------------------------------------------------------- 软字幕
+
+// 检测视频里有没有「文字型」字幕轨。
+// 图形字幕（hdmv_pgs / dvd_subtitle）是位图，提取不出文本，仍然要走 OCR。
+function probeSubtitleTracks(video) {
+  try {
+    const out = String(run('ffprobe', ['-v', 'error', '-select_streams', 's',
+      '-show_entries', 'stream=index,codec_name,codec_type', '-of', 'json', video])).trim()
+    const streams = JSON.parse(out).streams || []
+    const TEXTUAL = new Set(['subrip', 'ass', 'ssa', 'mov_text', 'webvtt', 'text'])
+    return streams.filter((x) => TEXTUAL.has(String(x.codec_name || '').toLowerCase()))
+  } catch {
+    return []
+  }
+}
+
+// 把软字幕提取成 [{ start, end, text }]；失败返回 null，让调用方回退到 OCR
+function extractSoftSubtitles(video, outPath) {
+  try {
+    run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', video,
+      '-map', '0:s:0', '-c:s', 'srt', '-y', outPath])
+    const raw = readFileSync(outPath, 'utf8')
+    const cues = []
+    let cur = null
+    for (const line of raw.split(/\r?\n/)) {
+      const m = line.match(/^(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})/)
+      if (m) {
+        if (cur && cur.text) cues.push(cur)
+        cur = {
+          start: (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) + (+m[4]) / 1000,
+          end: (+m[5]) * 3600 + (+m[6]) * 60 + (+m[7]) + (+m[8]) / 1000,
+          text: '',
+        }
+      } else if (cur && line.trim() && !/^\d+$/.test(line.trim())) {
+        cur.text = (cur.text ? cur.text + ' ' : '') + line.trim().replace(/<[^>]+>/g, '')
+      }
+    }
+    if (cur && cur.text) cues.push(cur)
+    return cues.length ? cues : null
+  } catch {
+    return null
+  }
+}
+
 // ---------------------------------------------------------------- 探测
 
 function probe() {
@@ -647,9 +691,22 @@ async function main() {
   console.log(`[4/6] 候选 ${cues.length} 条（${ASR ? 'ASR 转写' : CUES_FILE ? '来自 ' + CUES_FILE : '仅视觉模式'}）`)
   lap('ASR/候选')
 
-  // 字幕提取（可选）：同样与 TransNet 并行，提前到这里而不是最后
+  // 字幕提取（可选）：软字幕优先，没有才走 OCR
   let subs = []
+  let softSubs = false
   if (SUBS) {
+    const tracks = probeSubtitleTracks(VIDEO)
+    if (tracks.length) {
+      const soft = extractSoftSubtitles(VIDEO, join(OUT, 'subs', 'soft.srt'))
+      if (soft && soft.length) {
+        softSubs = true
+        subs = soft.map((c) => ({ start: c.start, end: c.end, t: c.end, text: c.text, conf: 1 }))
+        console.log(`[subs] 发现 ${tracks.length} 条文字字幕轨（${tracks.map((x) => x.codec_name).join(',')}），直接提取 ${subs.length} 条，跳过 OCR`)
+        lap('字幕提取（软字幕）')
+      }
+    }
+  }
+  if (SUBS && !softSubs) {
     console.log('[subs] 跑字幕提取（PP-OCR 硬字幕链路，与 TransNet 并行）...')
     const tSub = Date.now()
     resetStageTiming()
