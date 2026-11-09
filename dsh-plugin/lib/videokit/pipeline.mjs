@@ -694,6 +694,9 @@ async function main() {
 
   // 字幕提取（可选）：软字幕优先，没有才走 OCR
   let subs = []
+  // 三态：disabled（没开）/ failed（跑了但失败）/ completed（跑完）
+  // 空数组 + completed 才等于「确实没有文字」
+  let subsStatus = SUBS ? 'failed' : 'disabled'
   let softSubs = false
   if (SUBS) {
     const tracks = probeSubtitleTracks(VIDEO)
@@ -702,6 +705,7 @@ async function main() {
       if (soft && soft.length) {
         softSubs = true
         subs = soft.map((c) => ({ start: c.start, end: c.end, t: c.end, text: c.text, conf: 1 }))
+        subsStatus = 'completed'
         console.log(`[subs] 发现 ${tracks.length} 条文字字幕轨（${tracks.map((x) => x.codec_name).join(',')}），直接提取 ${subs.length} 条，跳过 OCR`)
         lap('字幕提取（软字幕）')
       }
@@ -716,7 +720,8 @@ async function main() {
     for (const m of dumpStageTiming()) {
       console.log(`  [stage] ${m.stage}: wall ${m.wallMs}ms | cpu ${m.cpuMs}ms | par ${m.par}`)
     }
-    console.log(`[subs] 完成 ${((Date.now() - tSub) / 1000).toFixed(1)}s，字幕 ${subs.length} 条`)
+    subsStatus = 'completed'
+    console.log(`[subs] 完成 ${((Date.now() - tSub) / 1000).toFixed(1)}s，字幕 ${subs.length} 条（status=completed）`)
     lap('字幕提取')
     for (const sm of subs.slice(0, 10)) console.log(`  ${sm.start.toFixed(1)}~${sm.end.toFixed(1)}s conf=${sm.conf.toFixed(2)} | ${sm.text}`)
   } else {
@@ -820,6 +825,7 @@ async function main() {
     },
     // 画面文字（气泡/招牌）：不属于字幕时间轴，单独一列（ADR-0013）
     screenText: (subs.screenText || []).map((x) => ({ t: x.t, text: x.text, conf: x.conf })),
+    subsStatus,  // disabled | failed | completed（ADR-0015）
     subs: subs.map((x) => ({
       start: x.start, end: x.end, t: x.t, text: x.text, conf: x.conf,
       review: (x.conf < 0.85 || /[0-9]/.test(x.text) || x.text.length < 3) ? [x.conf < 0.85 ? 'low_conf' : null, /[0-9]/.test(x.text) ? 'digits' : null, x.text.length < 3 ? 'short' : null].filter(Boolean) : null,
