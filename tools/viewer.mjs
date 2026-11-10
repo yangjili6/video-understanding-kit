@@ -53,6 +53,17 @@ const rowsHtml = pages.map((pg, i) => {
   </figure>`
 }).join('\n')
 
+// OCR 字幕列表（带时间戳）
+const subsList = (idx.subs || []).map((x, i) => ({ ...x, i }))
+const subsHtml = subsList.map((x) => (
+  '<div class="subrow">'
+  + '<span class="subidx">#' + (x.i + 1) + '</span>'
+  + '<span class="subtime">' + Number(x.start).toFixed(1) + 's – ' + Number(x.end).toFixed(1) + 's</span>'
+  + '<span class="subtext">' + esc(x.text) + '</span>'
+  + '<span class="subconf">conf ' + Number(x.conf || 0).toFixed(2) + '</span>'
+  + '</div>'
+)).join('')
+
 const stagesHtml = stages.map(([k, v]) => `
   <div class="stagerow">
     <div class="sname">${esc(k)}</div>
@@ -105,6 +116,14 @@ const html = `<!doctype html>
   .badge.grouped { color:var(--grouped); }
   .badge.dropped { color:var(--dropped); }
   .badge.view { color:var(--view); border-color:#2b5b8a; }
+  .subs { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:6px 4px; margin-bottom:8px; }
+  .subrow { display:flex; gap:10px; align-items:baseline; padding:7px 10px; font-size:12.5px; border-bottom:1px solid rgba(255,255,255,.04); }
+  .subrow:last-child { border-bottom:none; }
+  .subidx { color:var(--dim); min-width:26px; font-variant-numeric:tabular-nums; }
+  .subtime { color:#4a9eff; font-variant-numeric:tabular-nums; min-width:108px; }
+  .subtext { flex:1; line-height:1.5; }
+  .subconf { color:var(--dim); font-size:11px; font-variant-numeric:tabular-nums; }
+  .empty { padding:14px; color:var(--dim); font-size:12.5px; text-align:center; }
   h2 { font-size:15px; margin:26px 0 12px; padding-left:2px; }
   .stagerow { display:grid; grid-template-columns:110px 1fr 62px; gap:8px; align-items:center;
               margin-bottom:7px; font-size:12.5px; }
@@ -130,6 +149,9 @@ const html = `<!doctype html>
   <div class="grid">
 ${rowsHtml}
   </div>
+
+  <h2>OCR 字幕（${subsList.length} 条）</h2>
+  <div class="subs">${subsHtml || '<div class="empty">本片没有识别到硬字幕</div>'}</div>
 
   <h2>各阶段耗时</h2>
   ${stagesHtml}
