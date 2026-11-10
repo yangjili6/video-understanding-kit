@@ -44,7 +44,9 @@ if (!VIDEO || !existsSync(VIDEO)) {
 const OUT = args.out || 'out'
 const CUES_FILE = args.cues || null
 const ASR = !!args.asr
-const BASE_FPS = Number(args['base-fps'] || 5)
+// 基础抽帧率。0 = 自动：按帧预算与时长反推（见 probe 之后），
+// 显式传 --base-fps 才用固定值。固定 5fps 会让页数随时长线性膨胀。
+let BASE_FPS = Number(args['base-fps'] || 0)
 const CHANGE_FPS = Number(args['change-fps'] || 5)
 const DIFF_TH = Number(args['diff-threshold'] || 8)
 const WINDOW = Number(args.window || 2)
@@ -55,12 +57,12 @@ const FORCE = args.force === true
 const PAGE_FRAMES = 6
 // 展示帧预算：不管视频多长，进入网格的帧数受这个上限约束。
 // 不设上限时页数 = 时长 × fps ÷ 6，是线性膨胀的（135s 出 112 页、10 分钟出 500 页）。
-const FRAME_BUDGET = Number(process.env.DSH_FRAME_BUDGET || 300)
+const FRAME_BUDGET = Number(process.env.DSH_FRAME_BUDGET || 120)
 // 单页起点之间的最大间隔（秒）。这是「时间保底」约束：
 // 默认 3 秒：300 帧预算下（50 页）135 秒视频要 2.7 秒/页，取 2 秒会一直报「预算不足」；
 // 3 秒留给长视频一点余量，实际间隔仍以 samplingBudget 里的 pageStepSec 为准。
 // 超过它说明预算不足以满足覆盖要求，必须如实报「未满足」，不能悄悄放宽后假装满足。
-const MAX_GAP_SEC = Number(process.env.DSH_MAX_GAP_SEC || 3)
+const MAX_GAP_SEC = Number(process.env.DSH_MAX_GAP_SEC || 7)
 const MAX_EXTRA_PER_CUE = 12
 const MAX_EXTRA_TOTAL = 120
 const EPS = 0.001
@@ -663,6 +665,44 @@ function detectCutsInWorker(video, opts) {
   })
 }
 
+/**
+ * 把相邻内容组合并到目标页数。
+ *
+ * 为什么需要：页数 = max(组数, 帧数/6)。镜头切得碎的片子组数多，
+ * 每个组只有 2-3 帧也会各自占一页——135 秒切 42 个镜头就出 43 页，
+ * 而且大部分是「半页」。这时候限制帧预算没用，瓶颈是组数。
+ *
+ * 合并后一页的 6 格可能来自不同镜头，但每帧都带时间戳，
+ * 网格本来就表示「这段时间里的若干采样点」，不是「同一镜头内的连续动作」。
+ */
+function mergeGroupsToTarget(groups, target) {
+  if (!groups.length) return groups
+  // 页数 = 组数 × 每组页数。要精确控制页数，就得让「每组 ≤ PAGE_FRAMES 帧」——
+  // 否则某个合并组帧数超 6 还是会拆成 2 页，页数就会比目标多。
+  const all = groups.flatMap((g) => (g.frames || []).map((f) => ({ f, g })))
+  if (!all.length) return groups
+  const maxPages = Math.max(3, target)
+  const per = Math.max(PAGE_FRAMES, Math.ceil(all.length / maxPages))
+  const out = []
+  for (let i = 0; i < all.length; i += per) {
+    const chunk = all.slice(i, i + per)
+    if (!chunk.length) continue
+    const frames = chunk.map((x) => x.f)
+    const srcGroups = [...new Set(chunk.map((x) => x.g.id))]
+    out.push({
+      id: `g${String(out.length + 1).padStart(2, '0')}`,
+      type: 'content',
+      from: frames[0].t,
+      to: frames[frames.length - 1].t,
+      frames,
+      originalFrames: chunk.reduce((n, x) => n + (x.g.originalFrames || (x.g.frames || []).length), 0),
+      status: chunk.every((x) => x.g.status === 'clean') ? 'clean' : 'uncertain',
+      mergedFrom: srcGroups,
+    })
+  }
+  return out
+}
+
 async function buildPages(groups, vertical) {
   const pages = []
   const jobs = []
@@ -753,7 +793,14 @@ async function main() {
   mkdirSync(join(OUT, 'grids'), { recursive: true })
 
   const { duration, fps, width, height } = probe()
-  console.log(`[1/6] 时长 ${duration.toFixed(2)}s，源帧率 ${fps}fps`)
+  if (!BASE_FPS) {
+    // 自适应基础帧率：让「抽出来的帧数」≈ 帧预算，而不是让页数随时长膨胀
+    // 下限 1fps（再低抽不到东西），上限 5fps（短视频保持细节）
+    BASE_FPS = Math.min(5, Math.max(1, Math.round((FRAME_BUDGET / Math.max(1, duration)) * 100) / 100))
+    console.log(`[1/6] 时长 ${duration.toFixed(2)}s，源帧率 ${fps}fps → 自动基础帧率 ${BASE_FPS}fps（预算 ${FRAME_BUDGET} 帧）`)
+  } else {
+    console.log(`[1/6] 时长 ${duration.toFixed(2)}s，源帧率 ${fps}fps → 指定基础帧率 ${BASE_FPS}fps`)
+  }
 
   const baseFrames = extractBaseFrames(fps)
   lap('抽基础帧')
@@ -889,7 +936,13 @@ async function main() {
     (coverage.report.satisfied ? '' : '  ⚠️ ' + coverage.report.reason),
   )
   const tGroupStart = Date.now()
-  const { groups, boundaries } = buildGroups(displaySet, segs, histDiffs, hists, duration, cutTimes)
+  const { groups: rawGroups, boundaries } = buildGroups(displaySet, segs, histDiffs, hists, duration, cutTimes)
+  // 页数上限 = 预算页数。组数超过它时合并相邻组——否则页数被镜头切分次数决定
+  const targetPages = Math.max(3, Math.floor(FRAME_BUDGET / PAGE_FRAMES))
+  const groups = mergeGroupsToTarget(rawGroups, targetPages)
+  if (groups.length < rawGroups.length) {
+    console.log('[5c] 组 ' + rawGroups.length + ' 个超过页预算 ' + targetPages + '，合并为 ' + groups.length + ' 组')
+  }
   const pages = await buildPages(groups, height > width)
   // 组级拼图（导航用）：按可读性分页，每张 ≤12 页（3×4）
   const SHEET_CHUNK = 12
