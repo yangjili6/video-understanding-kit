@@ -4,15 +4,15 @@
 
 ## 能力
 
-插件注册两个工具：
+插件注册三个工具：
 
 ### `video_analyze`
 
-输入本地视频路径或 Bilibili 视频链接（支持 `b23.tv` 短链），返回视频时长、内容组、字幕时间线（硬字幕 OCR + ASR 台词）、输出目录和索引路径。两条识别链的默认开关由**侧栏面板**决定（见下节）；工具参数显式传了则以参数为准：`subs` 控制硬字幕 OCR，`asr` 控制语音识别。
+输入本地视频路径或 Bilibili 视频链接（支持 `b23.tv` 短链），返回视频时长、内容组、字幕时间线（硬字幕 OCR + ASR 台词）、输出目录和索引路径。两条识别链的开关**只能从侧栏面板设置**（见下节）——0.3.0 起工具不再接受 `subs` / `asr` 参数，避免 agent 传参把面板开关架空。
 
 返回值里 `subsCount` 只统计 PP-OCR 硬字幕，`asrCount` / `asr` 是语音台词，两者互不代表 —— 硬字幕为 0 不等于视频没声音。
 
-当前**不支持任意 HTTP 直链**。URL 视频会下载到临时目录，分析结束后临时视频会删除。
+当前**不支持任意 HTTP 直链**。URL 视频下载到 `downloads/`，**保留 24 小时、最多 3 条**（新的顶掉旧的）：同一视频重复分析不必重新下载，也能避开 B 站限流。
 
 ### `video_frame`
 
@@ -24,6 +24,13 @@
 2. 对不确定的字幕或动作，调用 `video_frame` 定位原帧，或用 `read_image` 打开对应网格页。
 3. 将 OCR/ASR 视为候选文本；关键文字、数字和动作细节要回看核验。
 
+### `video_look`
+
+看第 N 页网格：**图和这一页的字幕在同一个返回里，图排在文字前面**。这是「看图说话」的强制入口——`video_report` 会核对实际看过的页数，没看够直接拒收。
+
+返回含 `dedup.role`（`kept` / `visualGroup` / `dropped`）、`openedCount`、该页时间段的 `subs` / `screenText` / `asr`。被判定重复的页默认拦下，核对去重质量时传 `includeDropped: true` 才看得到。
+
+0.3.0 起网格图随返回内联。若当前 DSH 版本的附件服务不可用，会返回 `imageAttached: false` 与 `imageSkipReason`，并在文本块最前面提示「用 `read_image` 打开 `gridPath`」——**降级不会静默**，避免只读到字幕就以为看过画面。
 ## 侧栏面板
 
 侧栏「视频理解」（YouTube 样式图标）打开一个控制面板，开关就是 `video_analyze` 的默认行为：
@@ -34,7 +41,7 @@
 | 语音识别（ASR） | 本地 sherpa-onnx paraformer 识别台词；视频有配音却没烧录字幕时必开 |
 | 基础抽帧率 | 1–12 fps，越高越细也越贵 |
 
-配置存在 `storages/dsh-video-kit/config.json`（全机共用）。工具调用没显式传 `subs` / `asr` 就按面板走；面板改了配置，下一次调用即生效，不需要重启。
+配置存在 `storages/dsh-video-kit/config.json`（全机共用）。OCR / ASR 开关只从面板读，工具参数不再能覆盖；面板改了配置，下一次调用即生效，不需要重启。
 
 面板数据走 `/dsh-video-kit-api`：`GET /config`、`POST /config`、`GET /recent`（最近几次运行的时长/组数/字幕数/台词数）。这个路由是本机免认证的插件路由，跟 WebUI 的认证体系无关。
 
@@ -74,7 +81,7 @@ ffmpeg / ImageMagick 若不在引擎的 `PATH` 中，插件会探测 DSH 扩展�
 dsh-video-kit/
 ├── out/        # index.json、base/extra 采样帧、grids、可选 subs/audio
 ├── frames/     # video_frame 截取的原始帧
-└── downloads/  # 分析/取帧期间的临时下载，完成后清理
+└── downloads/  # 下载的视频，保留 24h / 最多 3 条（新的顶掉旧的）
 ```
 
 `video_analyze` 的 `out` 参数只接受单级目录名称，产物始终写入插件存储目录下的唯一子目录。`video_frame` 的 `outDir` 也只接受存储区内的子目录名称。
@@ -84,7 +91,7 @@ dsh-video-kit/
 - 本地视频由设备上的 ffmpeg、ImageMagick 与 ONNX 模型处理，不会上传到远程推理服务。
 - 输入 Bilibili 链接时，插件会访问 Bilibili 短链/API，并下载对应视频流；该路径需要网络。
 - 首次准备模型时，从 Hugging Face 与 PaddleOCR 的 GitHub 原始文件地址下载约 47 MB 的模型和字典。
-- 临时视频下载会在分析/取帧结束后清理；生成的网格、索引和截帧保存在 DSH 本机存储中，直到用户自行删除。
+- 下载的视频保留 24 小时、最多 3 条，超出自动清理；生成的网格、索引和截帧保存在 DSH 本机存储中（`out/` 保留 7 天）。
 
 ## 实测记录
 

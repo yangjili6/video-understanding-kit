@@ -7,7 +7,9 @@
     "models": "node download-models.mjs",
     "preview": "node serve-preview.mjs",
     "sync": "node scripts/sync-videokit.mjs",
-    "sync:check": "node scripts/sync-videokit.mjs --check"
+    "sync:check": "node scripts/sync-videokit.mjs --check",
+    "pack:check": "node scripts/check-pack-files.mjs",
+    "check": "node scripts/check-pack-files.mjs && node scripts/sync-videokit.mjs --check"
   },
   "dependencies": {
     "onnxruntime-web": "^1.22.0"
