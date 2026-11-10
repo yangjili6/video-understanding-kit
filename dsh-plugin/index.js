@@ -673,8 +673,17 @@ const lookOut = {
   render: (_args, value) => {
     const blocks = []
     const v = value || {}
-    if (v.image && v.image.attachmentId) {
+    const hasImage = !!(v.image && v.image.attachmentId)
+    if (hasImage) {
       blocks.push({ type: 'image', attachment: v.image })
+    } else {
+      // 图没内联时必须明说，否则模型读完字幕就以为看过画面了——那正是这个
+      // 输出块要解决的问题，降级路径不能静默。
+      const why = v.imageSkipReason || 'unknown'
+      blocks.push({
+        type: 'text',
+        text: `⚠️ 本页网格图没有随本次返回内联（${why}）。必须用 read_image 打开 gridPath 才看得到画面，不要凭 subs / screenText 下结论。`,
+      })
     }
     const rest = { ...v }
     if (rest.image) delete rest.image
@@ -1326,24 +1335,44 @@ export function apply(ctx) {
         led.viewed = led.viewed || {}
         led.viewed[pageName] = { at: new Date().toISOString(), index: n, dropped: !!dropInfo }
         writeLedger(dir, led)
-        // 把这一页网格存进 attachments，让「图和字」在同一个返回里，且图排在前
+        // 把这一页网格存进 attachments，让「图和字」在同一个返回里，且图排在前。
+        // imageAttached 是显式标志：不能靠 image 是否为 null 让模型自己猜——
+        // 降级时它会以为已经看过图（与「提示说 A 实际 B」是同一类坑）。
         let image = null
+        let imageAttached = false
+        let imageSkipReason = null
         try {
           const att = ctx.get('attachments')
-          if (att && typeof att.saveImage === 'function' && existsSync(pg.file)) {
-            image = await att.saveImage({
-              data: readFileSync(pg.file),
-              mediaType: 'image/jpeg',
-              name: basename(pg.file),
-            })
+          if (!att) {
+            imageSkipReason = 'no_attachments_service'
+          } else if (!existsSync(pg.file)) {
+            imageSkipReason = 'grid_file_missing'
+          } else {
+            const input = { data: readFileSync(pg.file), mediaType: 'image/jpeg', name: basename(pg.file) }
+            // 附件服务的写入方法名随 DSH 版本不同：桌面版是 saveImage（单数），
+            // DSH Mobile 0.2.0-rc.2 只有 saveImages（复数）。两个都试，失败降级。
+            if (typeof att.saveImage === 'function') {
+              image = await att.saveImage(input)
+            } else if (typeof att.saveImages === 'function') {
+              const refs = await att.saveImages([input])
+              image = refs?.[0] ?? null
+            } else {
+              imageSkipReason = 'no_save_api'
+            }
+            imageAttached = !!image
+            if (!imageAttached && !imageSkipReason) imageSkipReason = 'save_returned_empty'
           }
-        } catch {
-          // 没有 attachments 服务（或图片不被接受）时降级为纯文本，不阻断阅读
+        } catch (e) {
+          // 附件服务拒绝或内部报错时降级为纯文本，不阻断阅读
           image = null
+          imageAttached = false
+          imageSkipReason = 'save_failed: ' + String(e?.message || e).slice(0, 120)
         }
         return {
           ok: true,
           image,
+          imageAttached,
+          ...(imageAttached ? {} : { imageSkipReason }),
           index: n,
           totalPages: pages.length,
           gridPath: pg.file,
