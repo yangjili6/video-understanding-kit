@@ -639,6 +639,50 @@ const jsonOut = {
   render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
 }
 
+/**
+ * video_look 的输出：**图片在前、文字在后**。
+ *
+ * 为什么图必须在前：只给文字时，模型很容易读完字幕就"看过"了，根本不打开图；
+ * 等在 video_report 门禁被拦下来还得返工。把图放进同一个返回块、排在文字前面，
+ * 模型在解析这一条结果时就已经看到画面了。
+ *
+ * 图片走 DSH 的 attachments 服务（内容寻址 sha256），不能内联 base64——
+ * 一页网格 600~800KB，内联会把 tool result 撑爆。
+ * 形态对齐内置 read_image 的 output.render：
+ *   { type: 'image', attachment: { attachmentId, mediaType, bytes, width, height } }
+ */
+const lookOut = {
+  schema: {
+    type: 'object',
+    additionalProperties: true,
+    properties: {
+      image: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          attachmentId: { type: 'string' },
+          mediaType: { type: 'string' },
+          bytes: { type: 'integer' },
+          width: { type: 'integer' },
+          height: { type: 'integer' },
+          name: { type: 'string' },
+        },
+      },
+    },
+  },
+  render: (_args, value) => {
+    const blocks = []
+    const v = value || {}
+    if (v.image && v.image.attachmentId) {
+      blocks.push({ type: 'image', attachment: v.image })
+    }
+    const rest = { ...v }
+    if (rest.image) delete rest.image
+    blocks.push({ type: 'text', text: JSON.stringify(rest, null, 2) })
+    return blocks
+  },
+}
+
 // ── 侧栏面板 API 的小工具 ───────────────────────────────────────────────────
 
 const API_ROUTE = '/dsh-video-kit-api'
@@ -1239,7 +1283,7 @@ export function apply(ctx) {
       required: ['taskId', 'index'],
       additionalProperties: false,
     },
-    output: jsonOut,
+    output: lookOut,
     async execute(args = {}) {
       try {
         const dir = taskDir(args.taskId)
@@ -1282,8 +1326,24 @@ export function apply(ctx) {
         led.viewed = led.viewed || {}
         led.viewed[pageName] = { at: new Date().toISOString(), index: n, dropped: !!dropInfo }
         writeLedger(dir, led)
+        // 把这一页网格存进 attachments，让「图和字」在同一个返回里，且图排在前
+        let image = null
+        try {
+          const att = ctx.get('attachments')
+          if (att && typeof att.saveImage === 'function' && existsSync(pg.file)) {
+            image = await att.saveImage({
+              data: readFileSync(pg.file),
+              mediaType: 'image/jpeg',
+              name: basename(pg.file),
+            })
+          }
+        } catch {
+          // 没有 attachments 服务（或图片不被接受）时降级为纯文本，不阻断阅读
+          image = null
+        }
         return {
           ok: true,
+          image,
           index: n,
           totalPages: pages.length,
           gridPath: pg.file,
