@@ -743,6 +743,44 @@ function readLedger(dir) {
   }
 }
 
+/**
+ * 本次采样的元信息。
+ *
+ * 为什么单独记这个：「逐页全看」最多只能说明**本次采样产物已全部阅读**，
+ * 不等于原视频全部信息已覆盖。采样版本（页数/帧数/帧率）一变，旧的阅读
+ * 百分比就不能沿用，否则门禁会制造虚假的完整性。
+ */
+function samplingOf(idx) {
+  // 注意：调用点在 pages 变量定义之前（TDZ），所以只吃 idx，页从这里自己取
+  const pgList = (idx.groups || []).flatMap((g) => g.pages || [])
+  const ts = []
+  for (const g of idx.groups || []) {
+    for (const pg of g.pages || []) {
+      for (const f of pg.frames || []) {
+        const t = Number(f.t)
+        if (Number.isFinite(t)) ts.push(t)
+      }
+    }
+  }
+  ts.sort((a, b) => a - b)
+  let maxGap = 0
+  for (let i = 1; i < ts.length; i++) maxGap = Math.max(maxGap, ts[i] - ts[i - 1])
+  const frames = ts.length
+  const baseFps = Number(idx.config?.baseFps) || null
+  return {
+    // 版本指纹：页数 + 帧数 + 帧率。任一变化都意味着采样变了
+    version: `${pgList.length}p-${frames}f-${baseFps ?? '?'}fps`,
+    pages: pgList.length,
+    frames,
+    baseFps,
+    durationSec: Number(idx.duration || 0) || null,
+    // 最大相邻采样间隔：越大表示越可能有事件落在采样点之间
+    maxGapSec: +maxGap.toFixed(2),
+    // 预算制尚未实现；实现后这里记录「是否因预算不足而放宽了间隔」
+    budgetTouched: null,
+  }
+}
+
 function writeLedger(dir, led) {
   try {
     writeFileSync(ledgerFile(dir), JSON.stringify(led, null, 2))
@@ -1238,11 +1276,15 @@ export function apply(ctx) {
           loadLevel: idx.loadLevel ?? null,
           tempC: Number.isFinite(idx.tempC) ? idx.tempC : null,
           elapsedMs: Date.now() - t0,
+          // 采样元信息：页数/帧数/最大相邻间隔。让调用方一开始就知道
+          // 「这是采样产物，页看全了也不等于原视频看完」
+          sampling: samplingOf(idx),
           // 把本次的 fullReview 落进账本：video_report 拿不到插件入参，只能读这里
           ...(() => {
             try {
               const led0 = readLedger(outDir)
               led0.fullReview = (args.fullReview ?? readFullReviewDefault()) === true
+              led0.sampling = samplingOf(idx)
               writeLedger(outDir, led0)
             } catch { /* 记账失败不影响分析 */ }
             return {}
@@ -1251,6 +1293,7 @@ export function apply(ctx) {
             const parts = ['**看图说话前必须先用 video_look 逐页看网格**：一页一次，图和该页的字幕在同一个返回里。']
             parts.push(`本次共 ${(idx.groups || []).reduce((n, g) => n + (g.pages || []).length, 0)} 页（taskId: ${basename(outDir)}）。`)
             parts.push('只看前几页不准下全片结论——video_report 会检查你实际看过的页数，证据不足会直接拒绝。')
+            parts.push('注意：这些是**采样页**（本次 ' + (idx.groups || []).reduce((n, g) => n + (g.pages || []).length, 0) + ' 页），页读全了也只代表采样产物读完了，不等于原视频无遗漏。')
             if (subs.length === 0 && asrCues.length === 0) parts.push('本片没有硬字幕也没有台词，画面就是全部信息。')
             else parts.push('subs/asr 只是台词，不能代替画面。需要更细的帧再用 video_frame。')
             // 不提「全看已开启」——门禁按 ledger/config 的 fullReview 算，
@@ -1445,8 +1488,13 @@ export function apply(ctx) {
           return !rec || !rec.representativePage
         }).length
 
+        // 本次采样的元信息（页数/帧数/最大间隔）。视频变化后版本会变，旧百分比作废
+        const sampling = led.sampling?.version ? led.sampling : samplingOf(idx)
         const coverage = {
-          // 第一组：原始页直接查看率 —— 这才是「看全」的验收口径，分母不缩
+          // 第一组：**本次采样页的阅读率**。注意这不是「原视频覆盖度」——
+          // 采样本身只抽了 5fps 的帧，页看全了也只代表这些帧都读过了
+          readRate: { viewed: originalsViewed, total: countableTotal, rate: +(originalsViewed / Math.max(1, countableTotal)).toFixed(3) },
+          // 旧字段名保留，避免调用方断裂
           countable: { viewed: originalsViewed, total: countableTotal, rate: +(originalsViewed / Math.max(1, countableTotal)).toFixed(3) },
           droppedExcluded: droppedPages.length,
           // 第二组：代表页查看率（去重后的首轮阅读成本）
@@ -1461,22 +1509,26 @@ export function apply(ctx) {
           return {
             ok: false,
             gate: 'rejected',
-            reason: (fullReview ? '逐页全看模式已开启：需覆盖全部 ' + countableTotal + ' 页，当前看过 ' + originalsViewed + ' 页（dropped 不计入）' : '代表页视觉证据不足：看过 ' + originalsViewed + '/' + countableTotal + ' 页（dropped 不计入），至少需要 ' + need + ' 页'),
+            reason: (fullReview ? '逐页全看模式：需读完全部 ' + countableTotal + ' 个采样页，当前 '+ originalsViewed + ' 页（dropped 不计入）' : '本次采样页阅读率不足：' + originalsViewed + '/' + countableTotal + '（dropped 不计入），至少需要 ' + need + ' 页'),
             coverage,
-            summary: '代表页直接查看 ' + originalsViewed + '/' + countableTotal +
-              (keptPages.length ? '；代表页查看 ' + keptViewed + '/' + keptPages.length : '') +
-              (droppedPages.length ? '；另有 ' + (droppedPages.length - droppedViewed) + ' 页视觉近似暂未查看' : ''),
+            sampling,
+            semanticNotice: '这里统计的是**本次采样页的阅读率**，不是原视频的覆盖率。采样版本 ' + sampling.version + '，代表帧 ' + sampling.frames + ' 个，最大相邻采样间隔 ' + sampling.maxGapSec + 's —— 点与点之间的内容本来就没被采到。',
+            readRateLabel: '本次采样页阅读率',
+            summary: '采样页阅读 ' + originalsViewed + '/' + countableTotal + '（原始页 ' + total + '）' +
+              (droppedPages.length ? '；dropped ' + droppedPages.length + ' 页不计入' : ''),
             missingFirst: missing,
-            hint: '用 video_look 逐页看（dropped 页需传 includeDropped: true）；去重只降低阅读成本，不改变覆盖口径',
+            hint: '用 video_look 逐页看（dropped 页需传 includeDropped: true）。去重只降低阅读成本，不改变阅读口径；页读完了也只代表采样产物读完，不等于原视频无遗漏',
           }
         }
         return {
           ok: true,
           gate: 'passed',
           coverage,
-          summary: '原始页直接查看 ' + originalsViewed + '/' + total +
-            (keptPages.length ? '；代表页查看 ' + keptViewed + '/' + keptPages.length : '') +
-            (droppedPages.length ? '；另有 ' + (droppedPages.length - droppedViewed) + ' 页视觉近似暂未查看' : ''),
+          sampling,
+          readRateLabel: '本次采样页阅读率',
+          semanticNotice: '通过的是**本次采样页的阅读完整性**，不是「整段视频无遗漏」。采样版本 ' + sampling.version + '，代表帧 ' + sampling.frames + ' 个，最大相邻采样间隔 ' + sampling.maxGapSec + 's。要声称「全片无遗漏」需要另做专项密度检查。',
+          summary: '采样页阅读 ' + originalsViewed + '/' + countableTotal + '（原始页 ' + total + '）' +
+            (droppedPages.length ? '；dropped ' + droppedPages.length + ' 页不计入' : ''),
           requiredPages: need,
           conclusion: String(args.conclusion || ''),
         }
