@@ -708,22 +708,52 @@ async function main() {
       }
     }
   }
+  // ADR-0016：OCR 与「补帧 + 分组分页」互不依赖（OCR 读的是视频本身，不读 cuts/pages），
+  // 所以这里不 await，先发出去让它和后面两段重叠；到构造 index 之前再收。
+  // 实测重叠无收益（2026-11-10 对照实验：重叠 118s vs 串行 117.5s，OCR 反而慢 9s），
+  // 默认走串行；DSH_SUBS_OVERLAP=1 可开启重叠，代码保留作对照入口。
+  const OVERLAP = process.env.DSH_SUBS_OVERLAP === '1'
+  let subsJob = null
+  let tSubStart = 0
   if (SUBS && !softSubs) {
-    console.log('[subs] 跑字幕提取（PP-OCR 硬字幕链路，与 TransNet 并行）...')
-    const tSub = Date.now()
+    console.log(
+      !OVERLAP
+        ? '[subs] 跑字幕提取（PP-OCR 硬字幕链路，串行：等它跑完再分组）...'
+        : '[subs] 跑字幕提取（PP-OCR 硬字幕链路，与 TransNet/分组分页重叠）...',
+    )
+    tSubStart = Date.now()
     resetStageTiming()
-    subs = await extractSubtitles(VIDEO, join(OUT, 'subs'), { fps: 2 })
-    // 分阶段 wall + 进程级 CPU（覆盖 worker 线程）
-    for (const m of dumpStageTiming()) {
-      console.log(`  [stage] ${m.stage}: wall ${m.wallMs}ms | cpu ${m.cpuMs}ms | par ${m.par}`)
-    }
-    subsStatus = 'completed'
-    console.log(`[subs] 完成 ${((Date.now() - tSub) / 1000).toFixed(1)}s，字幕 ${subs.length} 条（status=completed）`)
-    lap('字幕提取')
-    for (const sm of subs.slice(0, 10)) console.log(`  ${sm.start.toFixed(1)}~${sm.end.toFixed(1)}s conf=${sm.conf.toFixed(2)} | ${sm.text}`)
+    subsJob = (async () => {
+      const r = await extractSubtitles(VIDEO, join(OUT, 'subs'), { fps: 2 })
+      subsStatus = 'completed'
+      return r
+    })()
   } else {
     lap('字幕提取')
   }
+
+  /** 收 OCR 结果并按真实区间记时（并行段不能按 lap 顺序累加） */
+  const harvestSubs = async () => {
+    if (!subsJob) return
+    subs = await subsJob
+    subsJob = null
+    const tSubEnd = Date.now()
+    // 分阶段 wall + 进程级 CPU（覆盖 worker 线程）。
+    // 注意：重叠模式下这些 stage 的 wall 里混着分组分页的时间，par 会虚高，只作参考。
+    for (const m of dumpStageTiming()) {
+      console.log(`  [stage] ${m.stage}: wall ${m.wallMs}ms | cpu ${m.cpuMs}ms | par ${m.par}`)
+    }
+    console.log(
+      `[subs] 完成 ${((tSubEnd - tSubStart) / 1000).toFixed(1)}s，字幕 ${subs.length} 条（status=completed${OVERLAP ? '，与分组分页重叠' : ''}）`,
+    )
+    timings['字幕提取'] = Number(((tSubEnd - tSubStart) / 1000).toFixed(2))
+    tPrev = tSubEnd
+    console.log(`[timing] 字幕提取: ${((tSubEnd - tSubStart) / 1000).toFixed(1)}s`)
+    for (const sm of subs.slice(0, 10)) console.log(`  ${sm.start.toFixed(1)}~${sm.end.toFixed(1)}s conf=${sm.conf.toFixed(2)} | ${sm.text}`)
+  }
+
+  // 串行（默认）：立刻收，后面的分组分页等它跑完再开始
+  if (!OVERLAP) await harvestSubs()
 
   // 取 TransNet 结果（此时 worker 多半已经跑完，这段墙钟接近 0）
   const tWait = Date.now()
@@ -740,6 +770,7 @@ async function main() {
   lap('补帧')
 
   const displaySet = buildDisplaySet(baseFrames, cues)
+  const tGroupStart = Date.now()
   const { groups, boundaries } = buildGroups(displaySet, segs, histDiffs, hists, duration, cutTimes)
   const pages = await buildPages(groups, height > width)
   // 组级拼图（导航用）：按可读性分页，每张 ≤12 页（3×4）
@@ -758,7 +789,14 @@ async function main() {
   }
   await runPool(sheetJobs)
   console.log(`[6/6] 组 ${groups.length} 个，页 ${pages.length} 张`)
-  lap('分组+分页')
+  // 并行段用独立区间计时：OCR 和这段重叠，按 lap 的顺序累加会互相污染
+  const tGroupEnd = Date.now()
+  timings['分组+分页'] = Number(((tGroupEnd - tGroupStart) / 1000).toFixed(2))
+  tPrev = tGroupEnd
+  console.log(`[timing] 分组+分页: ${((tGroupEnd - tGroupStart) / 1000).toFixed(1)}s${!OVERLAP ? '' : '（与 OCR 重叠）'}`)
+
+  // 收 OCR：重叠模式下到这里分组分页已经跑完；串行模式下早已收过，这里是空操作
+  await harvestSubs()
 
   lap('字幕/其他')
   const problems = runChecks(displaySet, groups, pages)
