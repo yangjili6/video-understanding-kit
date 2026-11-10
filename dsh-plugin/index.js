@@ -776,8 +776,9 @@ function samplingOf(idx) {
     durationSec: Number(idx.duration || 0) || null,
     // 最大相邻采样间隔：越大表示越可能有事件落在采样点之间
     maxGapSec: +maxGap.toFixed(2),
-    // 预算制尚未实现；实现后这里记录「是否因预算不足而放宽了间隔」
-    budgetTouched: null,
+    // 保底采样的预算与满足情况（pipeline 写的 samplingBudget）
+    budget: idx.samplingBudget ?? null,
+    budgetTouched: idx.samplingBudget ? !idx.samplingBudget.satisfied : null,
   }
 }
 

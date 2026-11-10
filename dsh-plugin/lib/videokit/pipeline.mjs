@@ -56,6 +56,14 @@ const FALLBACK_SAMPLES = Number(args['fallback-samples'] || 3)
 const PAGE_SCALE = Number(args['page-scale'] || 1.8)
 const FORCE = args.force === true
 const PAGE_FRAMES = 6
+// 展示帧预算：不管视频多长，进入网格的帧数受这个上限约束。
+// 不设上限时页数 = 时长 × fps ÷ 6，是线性膨胀的（135s 出 112 页、10 分钟出 500 页）。
+const FRAME_BUDGET = Number(process.env.DSH_FRAME_BUDGET || 300)
+// 单页起点之间的最大间隔（秒）。这是「时间保底」约束：
+// 默认 3 秒：300 帧预算下（50 页）135 秒视频要 2.7 秒/页，取 2 秒会一直报「预算不足」；
+// 3 秒留给长视频一点余量，实际间隔仍以 samplingBudget 里的 pageStepSec 为准。
+// 超过它说明预算不足以满足覆盖要求，必须如实报「未满足」，不能悄悄放宽后假装满足。
+const MAX_GAP_SEC = Number(process.env.DSH_MAX_GAP_SEC || 3)
 const MAX_EXTRA_PER_CUE = 12
 const MAX_EXTRA_TOTAL = 120
 const EPS = 0.001
@@ -365,6 +373,102 @@ async function searchCandidates(cues, segs, fps) {
 
 
 // ---------------------------------------------------------------- 呈现集合（只增不减）
+
+/**
+ * 保底采样：把「全量帧」裁到预算内，同时尽量守住时间覆盖。
+ *
+ * 规则（第一版，按霁璃的「镜头保底 + 时间保底」）：
+ *   1. 按预算铺均匀的页起点（间隔 = 时长 / 页预算）
+ *   2. 起点靠近镜头边界时吸附到边界（镜头代表点，不额外消耗页数）
+ *   3. 每个起点取连续 PAGE_FRAMES 帧（页内保持动作连续，不做稀疏采样）
+ *   4. 页间隔超过 MAX_GAP_SEC → 报告 satisfied:false，不假装满足
+ *
+ * 为什么页内仍取连续帧：稀疏采样会把一页变成「6 个相隔 2 秒的点」，
+ * 网格就不再表示「某几秒内发生了什么」，看动作的意义没了。
+ * 稀疏应该发生在**选哪些页**，不是页内部。
+ */
+function selectCoverageFrames(frames, { cutTimes, durationSec, budgetPages, maxGapSec }) {
+  // 起点数 = min(预算允许的页数, 满足最大间隔所需的最少起点数)
+  // 这样「预算」和「间隔约束」各管各的：预算小 → 报未满足；间隔够 → 不浪费预算
+  const neededByGap = Math.ceil(durationSec / maxGapSec) + 1
+  const target = Math.max(3, Math.min(Math.floor(budgetPages), neededByGap))
+  const step = durationSec / target
+  if (frames.length <= target * PAGE_FRAMES) {
+    return {
+      frames,
+      report: {
+        enabled: true,
+        budgetPages: target,
+        plannedPages: Math.ceil(frames.length / PAGE_FRAMES),
+        pageStepSec: +step.toFixed(2),
+        satisfied: step <= maxGapSec,
+        note: '帧数本来就在预算内，未裁剪',
+      },
+    }
+  }
+
+  const pickAt = (t) => {
+    let best = 0
+    let bestD = Infinity
+    for (let i = 0; i < frames.length; i++) {
+      const d = Math.abs(frames[i].t - t)
+      if (d < bestD) { bestD = d; best = i }
+      else if (frames[i].t > t + 1) break
+    }
+    return best
+  }
+
+  const picked = new Set()
+  const starts = []
+  const raw = []
+  for (let k = 0; k < target; k++) raw.push(k * step)
+  for (let k = 0; k < target; k++) {
+    const t0 = raw[k]
+    // 镜头边界近在 0.6 秒内 → 候选吸附（镜头代表点优先，不额外占页）。
+    // 但吸附不能撑破间隔约束：前后都合规才采用，否则保留原位。
+    let snapped = t0
+    for (const ct of cutTimes || []) {
+      if (Math.abs(ct - t0) <= 0.6 && Math.abs(ct - t0) < Math.abs(snapped - t0)) snapped = ct
+    }
+    const prev = starts.length ? starts[starts.length - 1] : -Infinity
+    const next = k + 1 < target ? raw[k + 1] : durationSec
+    const t = snapped - prev <= maxGapSec && next - snapped <= maxGapSec ? snapped : t0
+    starts.push(t)
+    const idx = pickAt(t)
+    for (let j = 0; j < PAGE_FRAMES; j++) {
+      const f = frames[idx + j]
+      if (!f) break
+      if (picked.size >= target * PAGE_FRAMES) break
+      picked.add(f.sourceFrameId)
+    }
+  }
+
+  // 保底：被镜头边界吸附后可能留下空洞，补一个最近的未选帧
+  const out = frames.filter((f) => picked.has(f.sourceFrameId))
+  let maxGap = 0
+  for (let i = 1; i < starts.length; i++) maxGap = Math.max(maxGap, starts[i] - starts[i - 1])
+
+  return {
+    frames: out,
+    report: {
+      enabled: true,
+      budgetFrames: target * PAGE_FRAMES,
+      budgetPages: target,
+      plannedPages: Math.ceil(out.length / PAGE_FRAMES),
+      sourceFrames: frames.length,
+      pageStepSec: +step.toFixed(2),
+      maxStartGapSec: +maxGap.toFixed(2),
+      maxGapLimitSec: maxGapSec,
+      satisfied: maxGap <= maxGapSec + 0.01,
+      ...(maxGap > maxGapSec + 0.01
+        ? {
+            reason: '代表帧预算不足：预算 ' + target + ' 页（' + target * PAGE_FRAMES +
+              ' 帧）只能覆盖每 ' + step.toFixed(1) + ' 秒一个起点，超过要求的最大间隔 ' + maxGapSec + ' 秒',
+          }
+        : {}),
+    },
+  }
+}
 
 function buildDisplaySet(baseFrames, cues) {
   const all = [...baseFrames]
@@ -772,7 +876,21 @@ async function main() {
   for (const c of cues) console.log(`     ${c.id} [${c.extraction}] ${c.s.toFixed(2)}~${c.e.toFixed(2)}s${c.reason ? ' · ' + c.reason : ''}${c.note ? ' · ' + c.note : ''}`)
   lap('补帧')
 
-  const displaySet = buildDisplaySet(baseFrames, cues)
+  const fullDisplaySet = buildDisplaySet(baseFrames, cues)
+  // 保底采样：把展示帧裁到预算内（页数不再随时长线性膨胀）
+  const coverage = selectCoverageFrames(fullDisplaySet, {
+    cutTimes,
+    durationSec: duration,
+    budgetPages: Math.floor(FRAME_BUDGET / PAGE_FRAMES),
+    maxGapSec: MAX_GAP_SEC,
+  })
+  const displaySet = coverage.frames
+  console.log(
+    '[5b] 采样预算 ' + FRAME_BUDGET + ' 帧 / ' + Math.floor(FRAME_BUDGET / PAGE_FRAMES) + ' 页：' +
+    fullDisplaySet.length + ' → ' + displaySet.length + ' 帧，预计 ' + coverage.report.plannedPages +
+    ' 页，页起点间隔 ' + coverage.report.pageStepSec + 's' +
+    (coverage.report.satisfied ? '' : '  ⚠️ ' + coverage.report.reason),
+  )
   const tGroupStart = Date.now()
   const { groups, boundaries } = buildGroups(displaySet, segs, histDiffs, hists, duration, cutTimes)
   const pages = await buildPages(groups, height > width)
@@ -878,6 +996,9 @@ const index = {
     video: VIDEO,
     duration: Number(duration.toFixed(3)),
     sourceFps: fps,
+    // 保底采样的裁剪结果（是否满足最大间隔、预算多少、实际页间隔）。
+    // 注意不能叫 coverage —— index.json 里已有同名字段（候选覆盖），会互相覆盖。
+    samplingBudget: coverage.report,
     config: { baseFps: BASE_FPS, changeFps: CHANGE_FPS, diffThreshold: DIFF_TH, window: WINDOW, maxGroup: MAX_GROUP, pageFrames: PAGE_FRAMES, fallbackSamples: FALLBACK_SAMPLES },
     detections: changes.filter((d) => d.score >= DIFF_TH).map((d) => ({ prevT: Number(d.prevT.toFixed(2)), curT: Number(d.curT.toFixed(2)), score: Number(d.score.toFixed(1)) })),
     changeSegs: segs.map((s) => ({ from: Number(s.from.toFixed(2)), to: Number(s.to.toFixed(2)), peak: Number(s.peak.toFixed(1)), anchors: s.anchors.map((a) => ({ prevT: Number(a.prevT.toFixed(2)), curT: Number(a.curT.toFixed(2)), score: Number(a.score.toFixed(1)) })) })),
