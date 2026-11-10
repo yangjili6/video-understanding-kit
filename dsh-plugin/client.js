@@ -365,7 +365,7 @@ window.__ModuleLoader__.load({
               h(
                 'div',
                 { className: 'dvk-row-desc' },
-                '1–12 fps。越高越细，成本也越高。',
+                '0 = 自动（按页面预算与时长反推，保证页数不随时长膨胀）；1–12 = 固定 fps，越高越细、成本也越高。',
                 savedAt
                   ? h(
                       'span',
@@ -378,14 +378,14 @@ window.__ModuleLoader__.load({
             h('input', {
               className: 'dvk-num',
               type: 'number',
-              min: 1,
+              min: 0,
               max: 12,
               step: 1,
               disabled: loading || busy,
               value: cfg ? String(cfg.baseFps) : '',
               onChange: (e) => {
                 const v = Number(e.target.value)
-                if (Number.isFinite(v) && v >= 1 && v <= 12) patch({ baseFps: v, updatedBy: 'panel' })
+                if (Number.isFinite(v) && v >= 0 && v <= 12) patch({ baseFps: v, updatedBy: 'panel' })
               },
             }),
           ),

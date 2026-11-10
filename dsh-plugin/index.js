@@ -487,7 +487,7 @@ function removeAsset(target) {
 // 语义：面板上的开关是「默认行为」，工具参数显式传了就以参数为准。
 // 这样面板不用管每次调用的特例，Agent 也能针对性覆盖。
 
-const DEFAULT_CONFIG = { ocr: true, asr: false, baseFps: 5, fullReview: false, ocrAccel: false, calibration: null, updatedAt: null, updatedBy: null }
+const DEFAULT_CONFIG = { ocr: true, asr: false, baseFps: 0, fullReview: false, ocrAccel: false, calibration: null, updatedAt: null, updatedBy: null }
 
 // 面板默认值：每次调用时读，面板改了立刻生效（不要做成模块级常量）
 // 本机标定：跑 tools/calibrate.mjs，读回结果并附带设备指纹。
@@ -610,7 +610,7 @@ function coerceConfig(raw) {
     }
   }
   const fps = Number(raw.baseFps)
-  if (Number.isFinite(fps) && fps >= 1 && fps <= 12) out.baseFps = fps
+  if (Number.isFinite(fps) && fps >= 0 && fps <= 12) out.baseFps = fps
   if (typeof raw.updatedAt === 'string') out.updatedAt = raw.updatedAt
   if (typeof raw.updatedBy === 'string') out.updatedBy = raw.updatedBy
   return out
@@ -1051,7 +1051,8 @@ function runPipeline(videoPath, outDir, opts = {}) {
     const args = [PIPELINE, '--video', videoPath, '--out', outDir]
     if (opts.subs !== false) args.push('--subs')
     if (opts.asr) args.push('--asr')
-    if (opts.baseFps) args.push('--base-fps', String(opts.baseFps))
+    // 0 = 自动（按帧预算/时长反推），此时不传，让 pipeline 自己决定
+    if (opts.baseFps > 0) args.push('--base-fps', String(opts.baseFps))
 
     const cfgForRun = loadConfig()
     const calibForRun = cfgForRun.calibration
@@ -1165,7 +1166,7 @@ export function apply(ctx) {
         // OCR(字幕) 与 ASR(语音) 不再开放为工具参数：一律走侧栏面板配置。
         // 理由：agent 传参会架空面板开关——指挥官关了 OCR，agent 仍传 subs:true 照样跑。
         // 需要改这两项请去面板设置，工具只反映当前配置。
-        baseFps: { type: 'number', description: '基础抽帧率；不传则用面板配置（默认 5）' },
+        baseFps: { type: 'number', description: '基础抽帧率；不传则用面板配置（默认 0 = 自动：按帧预算与时长反推，页数不随时长膨胀）' },
         fullReview: { type: 'boolean', description: '是否逐页查看所有网格：true=每张都看（准确但 token 消耗大），false/不传=用侧栏面板的默认值' },
       },
       additionalProperties: false,
