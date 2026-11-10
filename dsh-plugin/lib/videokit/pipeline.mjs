@@ -815,15 +815,8 @@ async function main() {
   let dedupResult = null
   try {
     setDedupTmp(join(OUT, '.dedup-tmp'))
-    // 每页附上该时间段内的字幕文本：画面相同但字幕在变，说明内容在推进，不能算重复
-    const subList = (subs || []).map((s) => ({ start: Number(s.start), end: Number(s.end), text: String(s.text || '') }))
-    const subTextOf = (pg) => {
-      const ts = (pg.frames || []).map((f) => Number(f.t)).filter(Number.isFinite)
-      if (!ts.length) return ''
-      const from = Math.min(...ts), to = Math.max(...ts)
-      return subList.filter((s) => s.end >= from - 0.5 && s.start <= to + 0.5).map((s) => s.text).join('|')
-    }
-    const allPages = groups.flatMap((g) => g.pages.map((pg) => ({ ...pg, groupId: g.id, subText: subTextOf(pg) })))
+    // ADR-0015：视觉去重只吃视觉输入，不再挂字幕文本
+    const allPages = groups.flatMap((g) => g.pages.map((pg) => ({ ...pg, groupId: g.id })))
     dedupResult = dedupPages(allPages)
     console.log(`\n[dedup] 全图+局部复核：${dedupResult.stats.total} 页 → 保留 ${dedupResult.stats.kept}，标记去重 ${dedupResult.stats.dropped}（${(dedupResult.stats.ratio * 100).toFixed(1)}%）`)
   } catch (e) {
