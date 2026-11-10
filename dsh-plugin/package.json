@@ -23,6 +23,7 @@
     "lib/videokit/lib/transnet-lib.mjs",
     "lib/videokit/lib/transnet-worker.mjs",
     "lib/videokit/lib/ocr-det-worker.mjs",
+    "lib/videokit/lib/dedup.mjs",
     "lib/videokit/lib/cpu.mjs",
     "lib/videokit/tools/calibrate.mjs"
   ],
@@ -30,7 +31,7 @@
   "dsh": {
     "id": "dsh-video-kit",
     "name": "视频理解工具包",
-    "version": "0.2.1",
+    "version": "0.2.4",
     "permissions": "工具注册，侧栏面板与面板配置读写（/dsh-video-kit-api），DSH storages 数据目录读写，本机进程调用（ffmpeg / pipeline），网络访问（B站短链解析及视频下载）",
     "bundle": {
       "patch": "./cordis.patch.yml"
