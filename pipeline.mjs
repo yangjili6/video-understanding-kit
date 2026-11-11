@@ -57,6 +57,8 @@ const FORCE = args.force === true
 const PAGE_FRAMES = 6
 // 展示帧预算：不管视频多长，进入网格的帧数受这个上限约束。
 // 不设上限时页数 = 时长 × fps ÷ 6，是线性膨胀的（135s 出 112 页、10 分钟出 500 页）。
+// 采样模式（验收对照用）：uniform=均匀 / skeleton=仅骨架+镜头补缺 / full=全五步
+const SAMPLING_MODE = String(args['sampling-mode'] || process.env.DSH_SAMPLING_MODE || 'uniform')
 const FRAME_BUDGET = Number(process.env.DSH_FRAME_BUDGET || 120)
 // 单页起点之间的最大间隔（秒）。这是「时间保底」约束：
 // 默认 3 秒：300 帧预算下（50 页）135 秒视频要 2.7 秒/页，取 2 秒会一直报「预算不足」；
@@ -416,7 +418,7 @@ async function searchCandidates(cues, segs, fps) {
  *
  * 若骨架 + 镜头补缺就超预算，如实报告：优先保时间骨架，列出未覆盖的镜头。
  */
-function selectCoverageFrames(frames, { cutTimes, durationSec, budgetPages, maxGapSec, histDiffs }) {
+function selectCoverageFrames(frames, { cutTimes, durationSec, budgetPages, maxGapSec, histDiffs, cues, changes }) {
   const frameBudget = Math.max(PAGE_FRAMES * 3, Math.floor(budgetPages) * PAGE_FRAMES)
 
   if (frames.length <= frameBudget) {
@@ -456,6 +458,30 @@ function selectCoverageFrames(frames, { cutTimes, durationSec, budgetPages, maxG
   }
   const skeletonFrames = picked.size
 
+  // ── 验收对照：uniform 跳过骨架与镜头补缺，直接按时长均分取点 ──
+  if (SAMPLING_MODE === 'uniform') {
+    picked.clear()
+    for (let k = 0; k < frameBudget; k++) {
+      const t = ((k + 0.5) * durationSec) / frameBudget
+      picked.add(pickAt(t))
+    }
+    const outU = frames.filter((_, i) => picked.has(i))
+    let gU = 0
+    for (let i = 1; i < outU.length; i++) gU = Math.max(gU, outU[i].t - outU[i - 1].t)
+    return {
+      frames: outU,
+      report: {
+        enabled: true, mode: 'uniform',
+        budgetFrames: frameBudget, budgetPages: Math.floor(budgetPages),
+        actualFrames: outU.length, plannedPages: Math.ceil(outU.length / PAGE_FRAMES),
+        sourceFrames: frames.length,
+        maxFrameGapSec: +gU.toFixed(2), maxGapLimitSec: maxGapSec,
+        satisfied: gU <= maxGapSec + 0.01,
+        note: '验收对照：均匀采样（无骨架、无镜头补缺、无变化加密）',
+      },
+    }
+  }
+
   // ③ 镜头补缺：每个镜头至少一帧
   const cuts = Array.isArray(cutTimes) && cutTimes.length >= 2 ? cutTimes : [0, durationSec]
   let lensFilled = 0
@@ -491,6 +517,36 @@ function selectCoverageFrames(frames, { cutTimes, durationSec, budgetPages, maxG
   const vals = diffs.map((h) => h.d).sort((x, y) => x - y)
   const median = vals.length ? vals[Math.floor(vals.length / 2)] : 0
   const noiseFloor = vals.length ? vals[Math.floor(vals.length * 0.25)] : 0
+  // ── 多信号评分（GPT 方案，2026-11-11）──
+  // 单一「画面变化」会把「静态但语义重要」的段落降权——实测 KV-7 的 K7（豹2只有一门炮）
+  // 画面静止但字幕与语音持续输出，结果被挪走帧、漏掉命中。
+  // 五路信号加权后，静态讲解段靠 O/A 保住分数。
+  const absNorm = (arr, key) => {
+    const vals = arr.map((x) => Math.abs(Number(x[key]) || 0)).filter((v) => v > 0).sort((x, y) => x - y)
+    const med = vals.length ? vals[Math.floor(vals.length / 2)] : 1
+    return (t0, t1) => {
+      const sel = arr.filter((x) => x.t >= t0 && x.t < t1)
+      if (!sel.length || !(med > 0)) return 0
+      let sum = 0
+      for (const x of sel) sum += Math.min(3, Math.abs(Number(x[key]) || 0) / med)
+      return sum / sel.length
+    }
+  }
+  const nC = absNorm(diffs, 'd')        // C 画面变化
+  const nM = absNorm(changes || [], 'score')  // M 运动
+  const cuesArr = cues || []
+  const valueAt = (a, b) => {
+    const C = nC(a, b)
+    const M = nM(a, b)
+    const inWin = cuesArr.filter((c) => c.e >= a && c.s < b)
+    const O = inWin.length ? 1 : 0                       // O 有字幕
+    const density = (b - a) > 0 ? inWin.length / (b - a) : 0
+    const A = density > 0.25 ? 1 : density > 0.1 ? 0.5 : 0  // A 字幕密度≈语音密度
+    const mid = (a + b) / 2
+    const T = (cutTimes || []).some((c) => Math.abs(c - mid) < 2.5) ? 1 : 0  // T 镜头结构
+    return 0.25 * C + 0.20 * M + 0.20 * A + 0.15 * O + 0.20 * T
+  }
+
   const strengthAt = (a, b) => {
     const sel = diffs.filter((h) => h.t >= a && h.t < b)
     if (!sel.length || !(median > 0)) return 1
@@ -499,8 +555,31 @@ function selectCoverageFrames(frames, { cutTimes, durationSec, budgetPages, maxG
     return sum / sel.length
   }
 
+  // ── 验收对照：skeleton 模式不做变化加密 ──
+  if (SAMPLING_MODE === 'skeleton') {
+    const outS = frames.filter((_, i) => picked.has(i))
+    let gS = 0
+    for (let i = 1; i < outS.length; i++) gS = Math.max(gS, outS[i].t - outS[i - 1].t)
+    return {
+      frames: outS,
+      report: {
+        enabled: true, mode: 'skeleton',
+        budgetFrames: frameBudget, budgetPages: Math.floor(budgetPages),
+        actualFrames: outS.length, plannedPages: Math.ceil(outS.length / PAGE_FRAMES),
+        sourceFrames: frames.length,
+        skeletonFrames, lensFilled, densityFrames: 0, lensTotal: cuts.length - 1,
+        uncoveredLens,
+        maxFrameGapSec: +gS.toFixed(2), maxGapLimitSec: maxGapSec,
+        satisfied: gS <= maxGapSec + 0.01,
+        note: '验收对照：时间骨架 + 镜头补缺（不含变化加密）',
+      },
+    }
+  }
+
   let order = [...picked].sort((x, y) => frames[x].t - frames[y].t)
   let densityFrames = 0
+  const idealGap = durationSec / Math.max(1, frameBudget)
+  const minGapForDensity = Math.max(frames.length > 1 ? (frames[1].t - frames[0].t) * 1.1 : 0.4, idealGap * 0.6)
   while (picked.size < frameBudget) {
     let bestI = -1
     let bestScore = -1
@@ -508,8 +587,11 @@ function selectCoverageFrames(frames, { cutTimes, durationSec, budgetPages, maxG
       const a = frames[order[i]].t
       const b = frames[order[i + 1]].t
       const gap = b - a
-      if (gap <= step * 0.3) continue
-      const score = gap * strengthAt(a, b)
+      // 加密下限跟着「预算密度」走，而不是固定 step×0.3：
+      // 预算 198 帧 / 198 秒 = 每帧 1 秒，下限就该允许到 0.6 秒，
+      // 否则「下限 2 秒」会把 198 帧的预算卡在 116 帧用不完（实测）。
+      if (gap <= minGapForDensity) continue
+      const score = gap * (0.35 + valueAt(a, b))
       if (score > bestScore) { bestScore = score; bestI = i }
     }
     if (bestI < 0) break
@@ -534,6 +616,7 @@ function selectCoverageFrames(frames, { cutTimes, durationSec, budgetPages, maxG
     frames: out,
     report: {
       enabled: true,
+      mode: SAMPLING_MODE,
       budgetFrames: frameBudget,
       budgetPages: Math.floor(budgetPages),
       actualFrames: out.length,
@@ -906,8 +989,14 @@ async function main() {
   if (!BASE_FPS) {
     // 自适应基础帧率：让「抽出来的帧数」≈ 帧预算，而不是让页数随时长膨胀
     // 下限 1fps（再低抽不到东西），上限 5fps（短视频保持细节）
-    BASE_FPS = Math.min(5, Math.max(1, Math.round((FRAME_BUDGET / Math.max(1, duration)) * 100) / 100))
-    console.log(`[1/6] 时长 ${duration.toFixed(2)}s，源帧率 ${fps}fps → 自动基础帧率 ${BASE_FPS}fps（预算 ${FRAME_BUDGET} 帧）`)
+    // 样本池要大于预算，否则「采样」退化成「全用」，加权无从发挥。
+    // 预算帧 = 动态页数 × 6；池子取预算的 1.5 倍。
+    const budgetNow = process.env.DSH_FRAME_BUDGET
+      ? FRAME_BUDGET
+      : Math.max(8, Math.min(36, Math.ceil(duration / 6))) * PAGE_FRAMES
+    const poolTarget = budgetNow * 1.5
+    BASE_FPS = Math.min(5, Math.max(1, Math.round((poolTarget / Math.max(1, duration)) * 100) / 100))
+    console.log(`[1/6] 时长 ${duration.toFixed(2)}s，源帧率 ${fps}fps → 自动基础帧率 ${BASE_FPS}fps（目标池子 ${Math.round(BASE_FPS * duration)} 帧）`)
   } else {
     console.log(`[1/6] 时长 ${duration.toFixed(2)}s，源帧率 ${fps}fps → 指定基础帧率 ${BASE_FPS}fps`)
   }
@@ -1032,16 +1121,27 @@ async function main() {
 
   const fullDisplaySet = buildDisplaySet(baseFrames, cues)
   // 保底采样：把展示帧裁到预算内（页数不再随时长线性膨胀）
+  // 动态预算：没显式指定帧预算时，按「每页覆盖 6 秒」推算，夹在 8-36 页
+  const pagesByDuration = Math.max(8, Math.min(36, Math.ceil(duration / 6)))
+  const budgetPages = process.env.DSH_FRAME_BUDGET
+    ? Math.floor(FRAME_BUDGET / PAGE_FRAMES)
+    : pagesByDuration
+  if (!process.env.DSH_FRAME_BUDGET) {
+    console.log('[5a] 动态预算：' + duration.toFixed(1) + 's / 6s = ' + pagesByDuration +
+      ' 页（夹在 8-36），共 ' + (pagesByDuration * PAGE_FRAMES) + ' 帧')
+  }
   const coverage = selectCoverageFrames(fullDisplaySet, {
     cutTimes,
     histDiffs,
+    cues,
+    changes,
     durationSec: duration,
-    budgetPages: Math.floor(FRAME_BUDGET / PAGE_FRAMES),
+    budgetPages,
     maxGapSec: MAX_GAP_SEC,
   })
   const displaySet = coverage.frames
   console.log(
-    '[5b] 采样预算 ' + FRAME_BUDGET + ' 帧 / ' + Math.floor(FRAME_BUDGET / PAGE_FRAMES) + ' 页：' +
+    '[5b] 采样[' + SAMPLING_MODE + '] ' + (budgetPages * PAGE_FRAMES) + ' 帧 / ' + budgetPages + ' 页：' +
     fullDisplaySet.length + ' → ' + displaySet.length + ' 帧，预计 ' + coverage.report.plannedPages +
     ' 页（骨架 ' + (coverage.report.skeletonFrames ?? '?') + ' 帧 + 镜头补 ' + (coverage.report.lensFilled ?? 0) + ' + 加密 ' + (coverage.report.densityFrames ?? 0) + '），' +
     '实际帧 ' + (coverage.report.actualFrames ?? '?') + ' / 预算 ' + FRAME_BUDGET + '，' +
