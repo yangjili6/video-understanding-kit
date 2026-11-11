@@ -403,6 +403,21 @@ async function searchCandidates(cues, segs, fps) {
  * 先按中位数归一化，clamp 到 [0.2, 3]，避免个别转场尖峰把整段权重带跑。
  * 单段额外配额有上限（间隙不短于骨架步长的 0.4 倍就停止插入），防止高变化段吞光预算。
  */
+/**
+ * 保底采样：把「全量帧」裁到预算内，采样密度跟着画面变化走。
+ *
+ * 模型：**窗口**，不是「起点 + 连续帧」。
+ *
+ * 上一版用「起点取连续 6 帧」，在 1fps 下 6 帧跨 6 秒，而相邻起点只隔 2.7-6.75 秒，
+ * 窗口必然重叠 —— 30 个起点实际只选出 ~156 帧，「起点数 = 页数」根本不成立。
+ * 现在改成：相邻起点取中点得到首尾相接的窗口，每个窗口内均匀取 6 点。
+ * 于是「帧数 = 预算帧数、页数 = 预算页数」严格成立，变化大的窗口自然更窄。
+ *
+ * 约束分工：
+ *   - 时间保底：maxGapSec 决定骨架起点间隔，超了如实报 satisfied:false
+ *   - 变化加权：剩余预算按「间隙长度 × 该段变化强度」插入，插入点取
+ *     累计变化权重的二分点（变化集中在间隙开头时，时间中点照顾不到）
+ */
 function selectCoverageFrames(frames, { cutTimes, durationSec, budgetPages, maxGapSec, histDiffs }) {
   const skeletonNeed = Math.ceil(durationSec / maxGapSec) + 1
   const budget = Math.max(3, Math.floor(budgetPages))
@@ -422,84 +437,107 @@ function selectCoverageFrames(frames, { cutTimes, durationSec, budgetPages, maxG
     }
   }
 
-  // ① 骨架：保证最大间隔（预算不够时按预算来，后面如实报未满足）
+  // ① 骨架起点：保证最大间隔
   const skeletonCount = Math.max(2, Math.min(budget, skeletonNeed))
   const step = durationSec / (skeletonCount - 1)
   const points = []
   for (let k = 0; k < skeletonCount; k++) points.push(Math.min(k * step, Math.max(0, durationSec - 1e-6)))
 
-  // ② 段变化强度：直方图帧差按中位数归一化
-  const diffs = (histDiffs || []).filter((h) => Number.isFinite(h.d))
-  const sorted = diffs.map((h) => h.d).sort((a, b) => a - b)
-  const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0
+  // ② 变化曲线：中位数归一化 + 绝对噪声底线
+  const diffs = (histDiffs || []).filter((h) => Number.isFinite(h.d) && h.d > 0)
+  const vals = diffs.map((h) => h.d).sort((a, b) => a - b)
+  const median = vals.length ? vals[Math.floor(vals.length / 2)] : 0
+  const p25 = vals.length ? vals[Math.floor(vals.length * 0.25)] : 0
+  // 噪声底线：取 25 分位。低于它的变化视作静止，不参与加密——
+  // 只加 epsilon 防除零会把压缩噪声放大成「高变化」。
+  const noiseFloor = p25
+  const weightOf = (h) => (h.d <= noiseFloor || !(median > 0) ? 0 : Math.max(0.2, Math.min(3, h.d / median)))
+
+  const within = (a, b) => diffs.filter((h) => h.t >= a && h.t < b)
   const strengthAt = (a, b) => {
-    const sel = diffs.filter((h) => h.t >= a && h.t < b)
-    if (!sel.length) return 1
-    const mean = sel.reduce((acc, h) => acc + h.d, 0) / sel.length
-    if (!(median > 0)) return 1
-    return Math.max(0.2, Math.min(3, mean / median))
+    const sel = within(a, b)
+    if (!sel.length) return 0
+    const sum = sel.reduce((acc, h) => acc + weightOf(h), 0)
+    return sum / sel.length
   }
 
-  // ③ 剩余预算：按「间隙长度 × 变化强度」插入，间隙太挤就停
+  /** 累计变化权重的二分点；权重全为零时退回时间中点 */
+  const weightedMid = (a, b) => {
+    const sel = within(a, b)
+    const total = sel.reduce((acc, h) => acc + weightOf(h), 0)
+    if (!(total > 0)) return (a + b) / 2
+    let acc = 0
+    for (const h of sel) {
+      acc += weightOf(h)
+      if (acc >= total / 2) return Math.max(a, Math.min(b, h.t))
+    }
+    return (a + b) / 2
+  }
+
+  // ③ 剩余预算：按「间隙长度 × 段强度」加密，插入位置用累计权重二分点
+  const minStartGap = step * 0.4
   let extra = budget - skeletonCount
-  const minGap = step * 0.4
   let inserted = 0
   while (extra-- > 0) {
     let bestIdx = -1
     let bestScore = -1
     for (let i = 0; i + 1 < points.length; i++) {
       const gap = points[i + 1] - points[i]
-      if (gap <= minGap) continue
+      if (gap <= minStartGap) continue
       const score = gap * strengthAt(points[i], points[i + 1])
       if (score > bestScore) { bestScore = score; bestIdx = i }
     }
     if (bestIdx < 0) break
-    points.splice(bestIdx + 1, 0, (points[bestIdx] + points[bestIdx + 1]) / 2)
+    const at = weightedMid(points[bestIdx], points[bestIdx + 1])
+    points.splice(bestIdx + 1, 0, at)
     inserted += 1
   }
   points.sort((a, b) => a - b)
 
-  // ④ 镜头边界吸附：只在不破坏最小间隙时采用
-  const snapped = points.map((t0) => {
-    let best = t0
-    for (const ct of cutTimes || []) {
-      if (Math.abs(ct - t0) <= 0.6 && Math.abs(ct - t0) < Math.abs(best - t0)) best = ct
-    }
-    return best
-  })
-  for (let i = 0; i < snapped.length; i++) {
-    const prev = i > 0 ? snapped[i - 1] : -Infinity
-    const next = i + 1 < snapped.length ? snapped[i + 1] : Infinity
-    const ok = snapped[i] - prev >= minGap && next - snapped[i] >= minGap
-    if (!ok) snapped[i] = points[i]
-  }
-  snapped.sort((a, b) => a - b)
+  // ④ 起点 → 窗口边界（相邻中点，首尾贴住 0 / duration）
+  const bounds = [0]
+  for (let i = 1; i < points.length; i++) bounds.push((points[i - 1] + points[i]) / 2)
+  bounds.push(durationSec)
 
-  // ⑤ 取帧：每个起点连续取 PAGE_FRAMES 帧
+  // ⑤ 每个窗口均匀取 PAGE_FRAMES 点
   const pickAt = (t) => {
     let best = 0
     let bestD = Infinity
     for (let i = 0; i < frames.length; i++) {
       const d = Math.abs(frames[i].t - t)
       if (d < bestD) { bestD = d; best = i }
-      else if (frames[i].t > t + 1) break
+      else if (frames[i].t > t + 1.5) break
     }
     return best
   }
-  const picked = new Set()
-  for (const t of snapped) {
+  const pickedIdx = new Set()
+  /** 优先取最近的「未被占用」帧：窄窗口里多个采样点会命中同一帧，不去重就会低于预算 */
+  const pickFresh = (t) => {
     const idx = pickAt(t)
+    if (!pickedIdx.has(idx)) return idx
+    for (let d = 1; d < frames.length; d++) {
+      if (idx - d >= 0 && !pickedIdx.has(idx - d)) return idx - d
+      if (idx + d < frames.length && !pickedIdx.has(idx + d)) return idx + d
+    }
+    return idx
+  }
+  for (let w = 0; w + 1 < bounds.length; w++) {
+    const a = bounds[w]
+    const b = bounds[w + 1]
     for (let j = 0; j < PAGE_FRAMES; j++) {
-      const f = frames[idx + j]
-      if (!f) break
-      if (picked.size >= budgetFrames) break
-      picked.add(f.sourceFrameId)
+      const t = a + ((b - a) * (j + 0.5)) / PAGE_FRAMES
+      pickedIdx.add(pickFresh(t))
     }
   }
-  const out = frames.filter((f) => picked.has(f.sourceFrameId))
+  const out = frames.filter((_, i) => pickedIdx.has(i))
 
-  let maxGap = 0
-  for (let i = 1; i < snapped.length; i++) maxGap = Math.max(maxGap, snapped[i] - snapped[i - 1])
+  // ⑥ 间隔报告：起点间隔 和 实际帧间隔 分开算，别混称「最长空档」
+  let maxStartGap = 0
+  for (let i = 1; i < points.length; i++) maxStartGap = Math.max(maxStartGap, points[i] - points[i - 1])
+  let maxFrameGap = 0
+  for (let i = 1; i < out.length; i++) maxFrameGap = Math.max(maxFrameGap, out[i].t - out[i - 1].t)
+
+  const satisfied = maxStartGap <= maxGapSec + 0.01
 
   return {
     frames: out,
@@ -508,19 +546,25 @@ function selectCoverageFrames(frames, { cutTimes, durationSec, budgetPages, maxG
       budgetFrames,
       budgetPages: budget,
       plannedPages: Math.ceil(out.length / PAGE_FRAMES),
+      actualFrames: out.length,
+      samplePool: frames.length,
       sourceFrames: frames.length,
       skeletonPages: skeletonCount,
       densityPages: inserted,
+      windows: bounds.length - 1,
       pageStepSec: +step.toFixed(2),
-      maxStartGapSec: +maxGap.toFixed(2),
+      minStartGapSec: +minStartGap.toFixed(2),
+      maxStartGapSec: +maxStartGap.toFixed(2),
+      maxFrameGapSec: +maxFrameGap.toFixed(2),
       maxGapLimitSec: maxGapSec,
-      satisfied: maxGap <= maxGapSec + 0.01,
-      ...(maxGap > maxGapSec + 0.01
-        ? {
+      noiseFloor: +noiseFloor.toFixed(4),
+      satisfied,
+      ...(satisfied
+        ? {}
+        : {
             reason: '代表帧预算不足：预算 ' + budget + ' 页只够每 ' + step.toFixed(1) +
-              ' 秒一个起点，超过要求的最大间隔 ' + maxGapSec + ' 秒',
-          }
-        : {}),
+              ' 秒一个窗口，超过要求的最大间隔 ' + maxGapSec + ' 秒',
+          }),
     },
   }
 }
@@ -614,7 +658,10 @@ function buildGroups(displaySet, segs, histDiffs, hists, duration, cutTimes) {
     const ce = candidateContentEnd(from, to, histDiffs)
     const startT = cs.status === 'stable' ? cs.start : from
     const endT = ce.status === 'stable' ? ce.end : to
-    let frames = displaySet.filter((f) => f.t >= startT - EPS && f.t < endT - EPS)
+    // 帧按【镜头原始边界】分配给组，保证全片不重不漏；
+    // startT/endT 是「内容起止」的干净点，只作标注——用它筛帧会把边界附近的帧丢掉
+    // （实测 157 帧采样只剩 121 帧进页，36 帧就是这么没的）。
+    let frames = displaySet.filter((f) => f.t >= from - EPS && f.t < to - EPS)
     let groupStatus = cs.status === 'stable' && ce.status === 'stable' ? 'clean' : 'uncertain'
     if (!frames.length) {
       // 允许单帧短组：取组内最接近中点的帧，不回退到边界帧
@@ -760,46 +807,57 @@ function mergeGroupsToTarget(groups, target) {
 }
 
 async function buildPages(groups, vertical) {
+  // 页是全局按时序切的，不是「每组各自切」。
+  // 原因：组数由镜头切分决定（135 秒能切 40 多组），如果按组切页，
+  // 页数就会被组数封顶——每组 2-3 帧也各占一页，一半是半页。
+  // 采样层已经用预算约束了帧数，页数应该只由 ceil(帧数 / 6) 决定。
+  const flat = []
+  for (const g of groups) for (const f of g.frames || []) flat.push({ f, gid: g.id })
+  flat.sort((a, b) => a.f.t - b.f.t)
+  const byId = new Map(groups.map((g) => [g.id, g]))
+  for (const g of groups) g.pages = []
+
   const pages = []
   const jobs = []
-  for (const g of groups) {
-    const chunks = []
-    for (let i = 0; i < g.frames.length; i += PAGE_FRAMES) chunks.push(g.frames.slice(i, i + PAGE_FRAMES))
-    g.pages = chunks.map((frames, pi) => {
-      const pid = `${g.id}-p${String(pi + 1).padStart(2, '0')}`
-      const file = join(OUT, 'grids', `${pid}.jpg`)
-      mkdirSync(join(OUT, 'grids'), { recursive: true })
-      const fw = Math.round(426 * PAGE_SCALE)
-      const fh = Math.round(240 * PAGE_SCALE)
-      const geometry = vertical ? `${Math.round(240 * PAGE_SCALE)}x${Math.round(426 * PAGE_SCALE)}+6+6` : `${fw}x${fh}+6+6`
-      const argv = ['-quality', '90', '-background', '#0f172a', '-geometry', geometry, '-tile', '3x2']
-      for (const f of frames) argv.push(f.file)
-      argv.push(file)
-      jobs.push(() => runAsync('montage', argv))
-      const cells = frames.map((f, i) => ({
-        cell: [i % 3, Math.floor(i / 3)],
-        t: f.t,
-        requestTime: f.requestTime,
-        srcFrameId: f.sourceFrameId,
-        extractionId: f.extractionId,
-        source: f.source,
-        shared: !!f.shared,
-      }))
-      return { page: pid, file, frames: cells }
-    })
-    pages.push(...g.pages)
+  for (let off = 0; off < flat.length; off += PAGE_FRAMES) {
+    const chunk = flat.slice(off, off + PAGE_FRAMES)
+    if (!chunk.length) continue
+    // 页归属于「第一帧所在的内容组」，只用于命名与溯源
+    const owner = byId.get(chunk[0].gid) || groups[0]
+    const frames = chunk.map((x) => x.f)
+    const pid = `${owner.id}-p${String(owner.pages.length + 1).padStart(2, '0')}`
+    const file = join(OUT, 'grids', `${pid}.jpg`)
+    mkdirSync(join(OUT, 'grids'), { recursive: true })
+    const fw = Math.round(426 * PAGE_SCALE)
+    const fh = Math.round(240 * PAGE_SCALE)
+    const geometry = vertical ? `${Math.round(240 * PAGE_SCALE)}x${Math.round(426 * PAGE_SCALE)}+6+6` : `${fw}x${fh}+6+6`
+    const argv = ['-quality', '90', '-background', '#0f172a', '-geometry', geometry, '-tile', '3x2']
+    for (const f of frames) argv.push(f.file)
+    argv.push(file)
+    jobs.push(() => runAsync('montage', argv))
+    const cells = frames.map((f, i) => ({
+      cell: [i % 3, Math.floor(i / 3)],
+      t: f.t,
+      requestTime: f.requestTime,
+      srcFrameId: f.sourceFrameId,
+      extractionId: f.extractionId,
+      source: f.source,
+      shared: !!f.shared,
+    }))
+    const page = { page: pid, file, frames: cells, groupId: owner.id }
+    owner.pages.push(page)
+    pages.push(page)
   }
   await runPool(jobs)
   return pages
 }
-
 
 // ---------------------------------------------------------------- 自动断言
 
 function runChecks(displaySet, groups, pages) {
   const problems = []
   // 内容组允许抽样（内容相同，展示帧是子集），所以不要求 displaySet 全进页
-  for (const g of groups) if (!g.pages || !g.pages.length) problems.push(`组无页: ${g.id}`)
+  // 页是全局按时序切的，内容组可能没有自己的页（帧被并到相邻窗口里），不算错
   for (const p of pages) if (p.frames.length > PAGE_FRAMES) problems.push(`页超帧: ${p.page} ${p.frames.length}`)
   const cellSet = new Set()
   for (const p of pages) for (const c of p.frames) {
@@ -989,17 +1047,15 @@ async function main() {
   console.log(
     '[5b] 采样预算 ' + FRAME_BUDGET + ' 帧 / ' + Math.floor(FRAME_BUDGET / PAGE_FRAMES) + ' 页：' +
     fullDisplaySet.length + ' → ' + displaySet.length + ' 帧，预计 ' + coverage.report.plannedPages +
-    ' 页（骨架 ' + (coverage.report.skeletonPages ?? '?') + ' + 变化加密 ' + (coverage.report.densityPages ?? 0) + '），页起点间隔 ' + coverage.report.pageStepSec + 's' +
+    ' 页（窗口 ' + (coverage.report.windows ?? '?') + '：骨架 ' + (coverage.report.skeletonPages ?? '?') + ' + 加密 ' + (coverage.report.densityPages ?? 0) + '），' +
+    '实际帧 ' + (coverage.report.actualFrames ?? '?') + ' / 预算 ' + FRAME_BUDGET + '，' +
+    '起点间隔 ' + coverage.report.maxStartGapSec + 's、帧间隔 ' + coverage.report.maxFrameGapSec + 's' +
     (coverage.report.satisfied ? '' : '  ⚠️ ' + coverage.report.reason),
   )
   const tGroupStart = Date.now()
-  const { groups: rawGroups, boundaries } = buildGroups(displaySet, segs, histDiffs, hists, duration, cutTimes)
-  // 页数上限 = 预算页数。组数超过它时合并相邻组——否则页数被镜头切分次数决定
-  const targetPages = Math.max(3, Math.floor(FRAME_BUDGET / PAGE_FRAMES))
-  const groups = mergeGroupsToTarget(rawGroups, targetPages)
-  if (groups.length < rawGroups.length) {
-    console.log('[5c] 组 ' + rawGroups.length + ' 个超过页预算 ' + targetPages + '，合并为 ' + groups.length + ' 组')
-  }
+  const { groups, boundaries } = buildGroups(displaySet, segs, histDiffs, hists, duration, cutTimes)
+  // 不再合并组：页数由采样预算决定，组数只影响语义归属。
+  // 需要合并组的旧路径见 mergeGroupsToTarget（保留但不再调用）。
   const pages = await buildPages(groups, height > width)
   // 组级拼图（导航用）：按可读性分页，每张 ≤12 页（3×4）
   const SHEET_CHUNK = 12
