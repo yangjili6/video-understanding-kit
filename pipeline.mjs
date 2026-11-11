@@ -401,102 +401,40 @@ async function searchCandidates(cues, segs, fps) {
  * 单段额外配额有上限（间隙不短于骨架步长的 0.4 倍就停止插入），防止高变化段吞光预算。
  */
 /**
- * 保底采样：把「全量帧」裁到预算内，采样密度跟着画面变化走。
+ * 保底采样 —— 五步原型（2026-11-11，按霁璃的方案重写）。
  *
- * 模型：**窗口**，不是「起点 + 连续帧」。
+ * 核心修正：**预算的单位是「图像槽位」，不是「页」。**
+ * 上一版把「起点数」当页数，然后纠结 20 页装不下 35 个镜头——那是算错了账。
+ * 20 页 × 6 格 = 120 个槽位，35 个镜头各占一帧完全放得下。
  *
- * 上一版用「起点取连续 6 帧」，在 1fps 下 6 帧跨 6 秒，而相邻起点只隔 2.7-6.75 秒，
- * 窗口必然重叠 —— 30 个起点实际只选出 ~156 帧，「起点数 = 页数」根本不成立。
- * 现在改成：相邻起点取中点得到首尾相接的窗口，每个窗口内均匀取 6 点。
- * 于是「帧数 = 预算帧数、页数 = 预算页数」严格成立，变化大的窗口自然更窄。
+ * 五步：
+ *   ① 预算 = pages × PAGE_FRAMES 个图像槽位
+ *   ② 时间骨架：每 maxGapSec 一个代表帧（保证**最终帧间隔**，不是页起点间隔）
+ *   ③ 镜头补缺：每个镜头至少一帧；已被骨架覆盖的不重复交保底税
+ *   ④ 变化加密：剩余槽位按变化强度插点
+ *   ⑤ 输出按时间排序的帧列表，装页交给下游全局切
  *
- * 约束分工：
- *   - 时间保底：maxGapSec 决定骨架起点间隔，超了如实报 satisfied:false
- *   - 变化加权：剩余预算按「间隙长度 × 该段变化强度」插入，插入点取
- *     累计变化权重的二分点（变化集中在间隙开头时，时间中点照顾不到）
+ * 若骨架 + 镜头补缺就超预算，如实报告：优先保时间骨架，列出未覆盖的镜头。
  */
 function selectCoverageFrames(frames, { cutTimes, durationSec, budgetPages, maxGapSec, histDiffs }) {
-  const skeletonNeed = Math.ceil(durationSec / maxGapSec) + 1
-  const budget = Math.max(3, Math.floor(budgetPages))
-  const budgetFrames = budget * PAGE_FRAMES
+  const frameBudget = Math.max(PAGE_FRAMES * 3, Math.floor(budgetPages) * PAGE_FRAMES)
 
-  if (frames.length <= budgetFrames) {
+  if (frames.length <= frameBudget) {
     return {
       frames,
       report: {
         enabled: true,
-        budgetPages: budget,
+        budgetFrames: frameBudget,
+        budgetPages: Math.floor(budgetPages),
         plannedPages: Math.ceil(frames.length / PAGE_FRAMES),
-        pageStepSec: +(durationSec / budget).toFixed(2),
-        satisfied: durationSec / budget <= maxGapSec,
+        sourceFrames: frames.length,
+        actualFrames: frames.length,
         note: '帧数本来就在预算内，未裁剪',
+        satisfied: true,
       },
     }
   }
 
-  // ① 骨架起点：保证最大间隔
-  const skeletonCount = Math.max(2, Math.min(budget, skeletonNeed))
-  const step = durationSec / (skeletonCount - 1)
-  const points = []
-  for (let k = 0; k < skeletonCount; k++) points.push(Math.min(k * step, Math.max(0, durationSec - 1e-6)))
-
-  // ② 变化曲线：中位数归一化 + 绝对噪声底线
-  const diffs = (histDiffs || []).filter((h) => Number.isFinite(h.d) && h.d > 0)
-  const vals = diffs.map((h) => h.d).sort((a, b) => a - b)
-  const median = vals.length ? vals[Math.floor(vals.length / 2)] : 0
-  const p25 = vals.length ? vals[Math.floor(vals.length * 0.25)] : 0
-  // 噪声底线：取 25 分位。低于它的变化视作静止，不参与加密——
-  // 只加 epsilon 防除零会把压缩噪声放大成「高变化」。
-  const noiseFloor = p25
-  const weightOf = (h) => (h.d <= noiseFloor || !(median > 0) ? 0 : Math.max(0.2, Math.min(3, h.d / median)))
-
-  const within = (a, b) => diffs.filter((h) => h.t >= a && h.t < b)
-  const strengthAt = (a, b) => {
-    const sel = within(a, b)
-    if (!sel.length) return 0
-    const sum = sel.reduce((acc, h) => acc + weightOf(h), 0)
-    return sum / sel.length
-  }
-
-  /** 累计变化权重的二分点；权重全为零时退回时间中点 */
-  const weightedMid = (a, b) => {
-    const sel = within(a, b)
-    const total = sel.reduce((acc, h) => acc + weightOf(h), 0)
-    if (!(total > 0)) return (a + b) / 2
-    let acc = 0
-    for (const h of sel) {
-      acc += weightOf(h)
-      if (acc >= total / 2) return Math.max(a, Math.min(b, h.t))
-    }
-    return (a + b) / 2
-  }
-
-  // ③ 剩余预算：按「间隙长度 × 段强度」加密，插入位置用累计权重二分点
-  const minStartGap = step * 0.4
-  let extra = budget - skeletonCount
-  let inserted = 0
-  while (extra-- > 0) {
-    let bestIdx = -1
-    let bestScore = -1
-    for (let i = 0; i + 1 < points.length; i++) {
-      const gap = points[i + 1] - points[i]
-      if (gap <= minStartGap) continue
-      const score = gap * strengthAt(points[i], points[i + 1])
-      if (score > bestScore) { bestScore = score; bestIdx = i }
-    }
-    if (bestIdx < 0) break
-    const at = weightedMid(points[bestIdx], points[bestIdx + 1])
-    points.splice(bestIdx + 1, 0, at)
-    inserted += 1
-  }
-  points.sort((a, b) => a - b)
-
-  // ④ 起点 → 窗口边界（相邻中点，首尾贴住 0 / duration）
-  const bounds = [0]
-  for (let i = 1; i < points.length; i++) bounds.push((points[i - 1] + points[i]) / 2)
-  bounds.push(durationSec)
-
-  // ⑤ 每个窗口均匀取 PAGE_FRAMES 点
   const pickAt = (t) => {
     let best = 0
     let bestD = Infinity
@@ -507,61 +445,122 @@ function selectCoverageFrames(frames, { cutTimes, durationSec, budgetPages, maxG
     }
     return best
   }
-  const pickedIdx = new Set()
-  /** 优先取最近的「未被占用」帧：窄窗口里多个采样点会命中同一帧，不去重就会低于预算 */
-  const pickFresh = (t) => {
-    const idx = pickAt(t)
-    if (!pickedIdx.has(idx)) return idx
-    for (let d = 1; d < frames.length; d++) {
-      if (idx - d >= 0 && !pickedIdx.has(idx - d)) return idx - d
-      if (idx + d < frames.length && !pickedIdx.has(idx + d)) return idx + d
-    }
-    return idx
-  }
-  for (let w = 0; w + 1 < bounds.length; w++) {
-    const a = bounds[w]
-    const b = bounds[w + 1]
-    for (let j = 0; j < PAGE_FRAMES; j++) {
-      const t = a + ((b - a) * (j + 0.5)) / PAGE_FRAMES
-      pickedIdx.add(pickFresh(t))
-    }
-  }
-  const out = frames.filter((_, i) => pickedIdx.has(i))
+  const picked = new Set()
 
-  // ⑥ 间隔报告：起点间隔 和 实际帧间隔 分开算，别混称「最长空档」
-  let maxStartGap = 0
-  for (let i = 1; i < points.length; i++) maxStartGap = Math.max(maxStartGap, points[i] - points[i - 1])
+  // ② 时间骨架：段中心取点，保证相邻骨架帧间隔 ≈ duration/gapCount ≤ maxGapSec
+  const gapCount = Math.max(2, Math.ceil(durationSec / maxGapSec))
+  const step = durationSec / gapCount
+  for (let k = 0; k < gapCount; k++) {
+    if (picked.size >= frameBudget) break
+    picked.add(pickAt(k * step + step / 2))
+  }
+  const skeletonFrames = picked.size
+
+  // ③ 镜头补缺：每个镜头至少一帧
+  const cuts = Array.isArray(cutTimes) && cutTimes.length >= 2 ? cutTimes : [0, durationSec]
+  let lensFilled = 0
+  const uncoveredLens = []
+  for (let i = 0; i + 1 < cuts.length; i++) {
+    const a = cuts[i]
+    const b = cuts[i + 1]
+    if (!(b > a)) continue
+    let anyPicked = false
+    let first = -1
+    let last = -1
+    for (let j = 0; j < frames.length; j++) {
+      const t = frames[j].t
+      if (t < a || t >= b) continue
+      if (first < 0) first = j
+      last = j
+      if (picked.has(j)) { anyPicked = true; break }
+    }
+    if (anyPicked || first < 0) continue
+    if (picked.size >= frameBudget) {
+      uncoveredLens.push({ from: +a.toFixed(2), to: +b.toFixed(2) })
+      continue
+    }
+    // 镜头内部取代表帧（避开首尾各 1 帧，减少落在转场上的概率）
+    const inner = last > first + 2 ? [first + 1, last - 1] : [first, last]
+    const mid = Math.round((inner[0] + inner[1]) / 2)
+    picked.add(mid)
+    lensFilled += 1
+  }
+
+  // ④ 变化加密：剩余槽位按「间隙长度 × 变化强度」插点
+  const diffs = (histDiffs || []).filter((h) => Number.isFinite(h.d) && h.d > 0)
+  const vals = diffs.map((h) => h.d).sort((x, y) => x - y)
+  const median = vals.length ? vals[Math.floor(vals.length / 2)] : 0
+  const noiseFloor = vals.length ? vals[Math.floor(vals.length * 0.25)] : 0
+  const strengthAt = (a, b) => {
+    const sel = diffs.filter((h) => h.t >= a && h.t < b)
+    if (!sel.length || !(median > 0)) return 1
+    let sum = 0
+    for (const h of sel) sum += h.d <= noiseFloor ? 1 : Math.max(0.2, Math.min(3, h.d / median))
+    return sum / sel.length
+  }
+
+  let order = [...picked].sort((x, y) => frames[x].t - frames[y].t)
+  let densityFrames = 0
+  while (picked.size < frameBudget) {
+    let bestI = -1
+    let bestScore = -1
+    for (let i = 0; i + 1 < order.length; i++) {
+      const a = frames[order[i]].t
+      const b = frames[order[i + 1]].t
+      const gap = b - a
+      if (gap <= step * 0.3) continue
+      const score = gap * strengthAt(a, b)
+      if (score > bestScore) { bestScore = score; bestI = i }
+    }
+    if (bestI < 0) break
+    const midT = (frames[order[bestI]].t + frames[order[bestI + 1]].t) / 2
+    const ni = pickAt(midT)
+    if (picked.has(ni)) break
+    picked.add(ni)
+    order.splice(bestI + 1, 0, ni)
+    densityFrames += 1
+  }
+
+  const out = frames.filter((_, i) => picked.has(i))
+
+  // ⑤ 约束检查：用**最终帧时间戳**算最大间隔（不是页起点）
   let maxFrameGap = 0
   for (let i = 1; i < out.length; i++) maxFrameGap = Math.max(maxFrameGap, out[i].t - out[i - 1].t)
-
-  const satisfied = maxStartGap <= maxGapSec + 0.01
+  const headGap = out.length ? out[0].t : durationSec
+  const tailGap = out.length ? durationSec - out[out.length - 1].t : durationSec
+  const satisfied = maxFrameGap <= maxGapSec + 0.01
 
   return {
     frames: out,
     report: {
       enabled: true,
-      budgetFrames,
-      budgetPages: budget,
-      plannedPages: Math.ceil(out.length / PAGE_FRAMES),
+      budgetFrames: frameBudget,
+      budgetPages: Math.floor(budgetPages),
       actualFrames: out.length,
-      samplePool: frames.length,
+      plannedPages: Math.ceil(out.length / PAGE_FRAMES),
       sourceFrames: frames.length,
-      skeletonPages: skeletonCount,
-      densityPages: inserted,
-      windows: bounds.length - 1,
+      skeletonFrames,
+      lensFilled,
+      densityFrames,
+      uncoveredLens,
+      lensTotal: cuts.length - 1,
       pageStepSec: +step.toFixed(2),
-      minStartGapSec: +minStartGap.toFixed(2),
-      maxStartGapSec: +maxStartGap.toFixed(2),
       maxFrameGapSec: +maxFrameGap.toFixed(2),
+      headGapSec: +headGap.toFixed(2),
+      tailGapSec: +tailGap.toFixed(2),
       maxGapLimitSec: maxGapSec,
       noiseFloor: +noiseFloor.toFixed(4),
       satisfied,
       ...(satisfied
         ? {}
         : {
-            reason: '代表帧预算不足：预算 ' + budget + ' 页只够每 ' + step.toFixed(1) +
-              ' 秒一个窗口，超过要求的最大间隔 ' + maxGapSec + ' 秒',
+            reason:
+              '帧预算不足：' + frameBudget + ' 个槽位铺不满 ' + maxGapSec +
+              ' 秒的最大间隔（实际最大 ' + maxFrameGap.toFixed(1) + ' 秒）',
           }),
+      ...(uncoveredLens.length
+        ? { lensNote: '预算耗尽，' + uncoveredLens.length + ' 个镜头没有代表帧（优先保时间骨架）' }
+        : {}),
     },
   }
 }
@@ -1044,9 +1043,9 @@ async function main() {
   console.log(
     '[5b] 采样预算 ' + FRAME_BUDGET + ' 帧 / ' + Math.floor(FRAME_BUDGET / PAGE_FRAMES) + ' 页：' +
     fullDisplaySet.length + ' → ' + displaySet.length + ' 帧，预计 ' + coverage.report.plannedPages +
-    ' 页（窗口 ' + (coverage.report.windows ?? '?') + '：骨架 ' + (coverage.report.skeletonPages ?? '?') + ' + 加密 ' + (coverage.report.densityPages ?? 0) + '），' +
+    ' 页（骨架 ' + (coverage.report.skeletonFrames ?? '?') + ' 帧 + 镜头补 ' + (coverage.report.lensFilled ?? 0) + ' + 加密 ' + (coverage.report.densityFrames ?? 0) + '），' +
     '实际帧 ' + (coverage.report.actualFrames ?? '?') + ' / 预算 ' + FRAME_BUDGET + '，' +
-    '起点间隔 ' + coverage.report.maxStartGapSec + 's、帧间隔 ' + coverage.report.maxFrameGapSec + 's' +
+    '帧间隔 ' + coverage.report.maxFrameGapSec + 's（上限 ' + coverage.report.maxGapLimitSec + 's）' +
     (coverage.report.satisfied ? '' : '  ⚠️ ' + coverage.report.reason),
   )
   const tGroupStart = Date.now()
