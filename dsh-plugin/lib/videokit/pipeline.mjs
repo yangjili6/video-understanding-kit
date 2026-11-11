@@ -389,26 +389,93 @@ async function searchCandidates(cues, segs, fps) {
  * 网格就不再表示「某几秒内发生了什么」，看动作的意义没了。
  * 稀疏应该发生在**选哪些页**，不是页内部。
  */
-function selectCoverageFrames(frames, { cutTimes, durationSec, budgetPages, maxGapSec }) {
-  // 起点数 = min(预算允许的页数, 满足最大间隔所需的最少起点数)
-  // 这样「预算」和「间隔约束」各管各的：预算小 → 报未满足；间隔够 → 不浪费预算
-  const neededByGap = Math.ceil(durationSec / maxGapSec) + 1
-  const target = Math.max(3, Math.min(Math.floor(budgetPages), neededByGap))
-  const step = durationSec / target
-  if (frames.length <= target * PAGE_FRAMES) {
+/**
+ * 保底采样：把「全量帧」裁到预算内，同时让采样密度跟着画面变化走。
+ *
+ * 两个约束分工明确：
+ *   - 时间保底：任何相邻页起点间隔不超过 maxGapSec（超了就报未满足，不偷偷放宽）
+ *   - 变化加权：满足保底之后，剩下的预算按「间隙长度 × 该段变化强度」插入
+ *
+ * 为什么不能只做均匀骨架：短视频里"素材快剪"和"坐着口播"的信息密度差好几倍。
+ * 均匀采样会把口播段和快剪段同等对待——快剪段漏掉动作，口播段浪费页数。
+ *
+ * 变化强度用直方图帧差（histDiffs，CHANGE_FPS 独立采样，不受展示帧率影响）：
+ * 先按中位数归一化，clamp 到 [0.2, 3]，避免个别转场尖峰把整段权重带跑。
+ * 单段额外配额有上限（间隙不短于骨架步长的 0.4 倍就停止插入），防止高变化段吞光预算。
+ */
+function selectCoverageFrames(frames, { cutTimes, durationSec, budgetPages, maxGapSec, histDiffs }) {
+  const skeletonNeed = Math.ceil(durationSec / maxGapSec) + 1
+  const budget = Math.max(3, Math.floor(budgetPages))
+  const budgetFrames = budget * PAGE_FRAMES
+
+  if (frames.length <= budgetFrames) {
     return {
       frames,
       report: {
         enabled: true,
-        budgetPages: target,
+        budgetPages: budget,
         plannedPages: Math.ceil(frames.length / PAGE_FRAMES),
-        pageStepSec: +step.toFixed(2),
-        satisfied: step <= maxGapSec,
+        pageStepSec: +(durationSec / budget).toFixed(2),
+        satisfied: durationSec / budget <= maxGapSec,
         note: '帧数本来就在预算内，未裁剪',
       },
     }
   }
 
+  // ① 骨架：保证最大间隔（预算不够时按预算来，后面如实报未满足）
+  const skeletonCount = Math.max(2, Math.min(budget, skeletonNeed))
+  const step = durationSec / (skeletonCount - 1)
+  const points = []
+  for (let k = 0; k < skeletonCount; k++) points.push(Math.min(k * step, Math.max(0, durationSec - 1e-6)))
+
+  // ② 段变化强度：直方图帧差按中位数归一化
+  const diffs = (histDiffs || []).filter((h) => Number.isFinite(h.d))
+  const sorted = diffs.map((h) => h.d).sort((a, b) => a - b)
+  const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0
+  const strengthAt = (a, b) => {
+    const sel = diffs.filter((h) => h.t >= a && h.t < b)
+    if (!sel.length) return 1
+    const mean = sel.reduce((acc, h) => acc + h.d, 0) / sel.length
+    if (!(median > 0)) return 1
+    return Math.max(0.2, Math.min(3, mean / median))
+  }
+
+  // ③ 剩余预算：按「间隙长度 × 变化强度」插入，间隙太挤就停
+  let extra = budget - skeletonCount
+  const minGap = step * 0.4
+  let inserted = 0
+  while (extra-- > 0) {
+    let bestIdx = -1
+    let bestScore = -1
+    for (let i = 0; i + 1 < points.length; i++) {
+      const gap = points[i + 1] - points[i]
+      if (gap <= minGap) continue
+      const score = gap * strengthAt(points[i], points[i + 1])
+      if (score > bestScore) { bestScore = score; bestIdx = i }
+    }
+    if (bestIdx < 0) break
+    points.splice(bestIdx + 1, 0, (points[bestIdx] + points[bestIdx + 1]) / 2)
+    inserted += 1
+  }
+  points.sort((a, b) => a - b)
+
+  // ④ 镜头边界吸附：只在不破坏最小间隙时采用
+  const snapped = points.map((t0) => {
+    let best = t0
+    for (const ct of cutTimes || []) {
+      if (Math.abs(ct - t0) <= 0.6 && Math.abs(ct - t0) < Math.abs(best - t0)) best = ct
+    }
+    return best
+  })
+  for (let i = 0; i < snapped.length; i++) {
+    const prev = i > 0 ? snapped[i - 1] : -Infinity
+    const next = i + 1 < snapped.length ? snapped[i + 1] : Infinity
+    const ok = snapped[i] - prev >= minGap && next - snapped[i] >= minGap
+    if (!ok) snapped[i] = points[i]
+  }
+  snapped.sort((a, b) => a - b)
+
+  // ⑤ 取帧：每个起点连续取 PAGE_FRAMES 帧
   const pickAt = (t) => {
     let best = 0
     let bestD = Infinity
@@ -419,53 +486,39 @@ function selectCoverageFrames(frames, { cutTimes, durationSec, budgetPages, maxG
     }
     return best
   }
-
   const picked = new Set()
-  const starts = []
-  const raw = []
-  for (let k = 0; k < target; k++) raw.push(k * step)
-  for (let k = 0; k < target; k++) {
-    const t0 = raw[k]
-    // 镜头边界近在 0.6 秒内 → 候选吸附（镜头代表点优先，不额外占页）。
-    // 但吸附不能撑破间隔约束：前后都合规才采用，否则保留原位。
-    let snapped = t0
-    for (const ct of cutTimes || []) {
-      if (Math.abs(ct - t0) <= 0.6 && Math.abs(ct - t0) < Math.abs(snapped - t0)) snapped = ct
-    }
-    const prev = starts.length ? starts[starts.length - 1] : -Infinity
-    const next = k + 1 < target ? raw[k + 1] : durationSec
-    const t = snapped - prev <= maxGapSec && next - snapped <= maxGapSec ? snapped : t0
-    starts.push(t)
+  for (const t of snapped) {
     const idx = pickAt(t)
     for (let j = 0; j < PAGE_FRAMES; j++) {
       const f = frames[idx + j]
       if (!f) break
-      if (picked.size >= target * PAGE_FRAMES) break
+      if (picked.size >= budgetFrames) break
       picked.add(f.sourceFrameId)
     }
   }
-
-  // 保底：被镜头边界吸附后可能留下空洞，补一个最近的未选帧
   const out = frames.filter((f) => picked.has(f.sourceFrameId))
+
   let maxGap = 0
-  for (let i = 1; i < starts.length; i++) maxGap = Math.max(maxGap, starts[i] - starts[i - 1])
+  for (let i = 1; i < snapped.length; i++) maxGap = Math.max(maxGap, snapped[i] - snapped[i - 1])
 
   return {
     frames: out,
     report: {
       enabled: true,
-      budgetFrames: target * PAGE_FRAMES,
-      budgetPages: target,
+      budgetFrames,
+      budgetPages: budget,
       plannedPages: Math.ceil(out.length / PAGE_FRAMES),
       sourceFrames: frames.length,
+      skeletonPages: skeletonCount,
+      densityPages: inserted,
       pageStepSec: +step.toFixed(2),
       maxStartGapSec: +maxGap.toFixed(2),
       maxGapLimitSec: maxGapSec,
       satisfied: maxGap <= maxGapSec + 0.01,
       ...(maxGap > maxGapSec + 0.01
         ? {
-            reason: '代表帧预算不足：预算 ' + target + ' 页（' + target * PAGE_FRAMES +
-              ' 帧）只能覆盖每 ' + step.toFixed(1) + ' 秒一个起点，超过要求的最大间隔 ' + maxGapSec + ' 秒',
+            reason: '代表帧预算不足：预算 ' + budget + ' 页只够每 ' + step.toFixed(1) +
+              ' 秒一个起点，超过要求的最大间隔 ' + maxGapSec + ' 秒',
           }
         : {}),
     },
@@ -927,6 +980,7 @@ async function main() {
   // 保底采样：把展示帧裁到预算内（页数不再随时长线性膨胀）
   const coverage = selectCoverageFrames(fullDisplaySet, {
     cutTimes,
+    histDiffs,
     durationSec: duration,
     budgetPages: Math.floor(FRAME_BUDGET / PAGE_FRAMES),
     maxGapSec: MAX_GAP_SEC,
@@ -935,7 +989,7 @@ async function main() {
   console.log(
     '[5b] 采样预算 ' + FRAME_BUDGET + ' 帧 / ' + Math.floor(FRAME_BUDGET / PAGE_FRAMES) + ' 页：' +
     fullDisplaySet.length + ' → ' + displaySet.length + ' 帧，预计 ' + coverage.report.plannedPages +
-    ' 页，页起点间隔 ' + coverage.report.pageStepSec + 's' +
+    ' 页（骨架 ' + (coverage.report.skeletonPages ?? '?') + ' + 变化加密 ' + (coverage.report.densityPages ?? 0) + '），页起点间隔 ' + coverage.report.pageStepSec + 's' +
     (coverage.report.satisfied ? '' : '  ⚠️ ' + coverage.report.reason),
   )
   const tGroupStart = Date.now()
