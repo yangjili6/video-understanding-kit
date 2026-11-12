@@ -37,23 +37,29 @@
 
 ![ADR-0016 的三条核心公式](diagrams/adr16-formulas@2x.png)
 
-图里三条公式自上而下：**动态预算**、**五信号评分**、**间隙评分**。
+三条公式自上而下依次为：动态预算、五信号评分、间隙评分。式中各符号含义如下。
 
-其中 `T` 为视频时长（秒），`F_budget = 6 × pages` 为预算帧数。样本池取预算的 **1.5 倍** —— 否则池子等于预算，「采样」退化成「全用」，加权无从发挥。
+**符号说明**
 
-**多信号评分**（仅 `full` 模式使用）：
-
-| 符号 | 含义 | 检测方式 |
+| 符号 | 含义 | 取值 / 计算方式 |
 |---|---|---|
-| `C` | 画面变化 | 直方图帧差（histDiffs） |
-| `M` | 运动 | 块差异（changes.score） |
-| `A` | 音频密度 | 由字幕密度近似 |
-| `O` | 字幕存在性 | 字幕 cue 是否覆盖该窗口 |
-| `T` | 时间结构 | 是否邻近镜头边界 |
+| `T` | 视频时长 | 秒 |
+| `pages` | 网格页数 | 由式①计算，夹在 8–36 |
+| `F_budget` | 预算帧数 | `6 × pages` |
+| `F_pool` | 样本池帧数 | `1.5 × F_budget` |
+| `S_i` | 第 i 个候选窗口的信息价值 | 0–1，五信号加权 |
+| `C_i` | 画面变化 | 直方图帧差 |
+| `M_i` | 运动强度 | 块差异 |
+| `A_i` | 音频密度 | 由字幕密度近似 |
+| `O_i` | 字幕存在性 | 0 / 1 |
+| `T_i` | 时间结构 | 是否邻近镜头边界 |
+| `Δt_ij` | 候选间隙长度 | 秒 |
+| `v_ij` | 该段信号评分 | 同 `S_i`，取段内均值 |
+| `score_ij` | 间隙评分 | 越大越优先加密 |
 
-各项先按视频自身中位数归一化到 0–3 再截断；图里的权重 0.25 / 0.20 / 0.20 / 0.15 / 0.20 是起点，未做调参。
+各项信号先按视频自身中位数归一化到 0–3 再截断；式②中的权重 0.25 / 0.20 / 0.20 / 0.15 / 0.20 是起点，未做调参。式③的 0.35 是下限，避免纯静态段被完全饿死。
 
-**间隙评分**：`Δt` 是候选间隙长度（时间多样性项），`v` 是该段的信号评分（内容价值项）。0.35 是下限，避免纯静态段被完全饿死。
+样本池取预算的 **1.5 倍** —— 否则池子等于预算，「采样」退化成「全用」，加权无从发挥。
 
 **预算语义：上限，不是配额。**
 
@@ -151,15 +157,21 @@
 
 ## 公式图的生成方式
 
-`diagrams/adr16-formulas@2x.png` 由 [latex.codecogs.com](https://latex.codecogs.com) 的 PNG 接口生成（`\dpi{300}` 高清），三条公式分别下载后用 ImageMagick 垂直拼接、铺白底。
+`diagrams/adr16-formulas@2x.png` 由 [latex.codecogs.com](https://latex.codecogs.com) 的 PNG 接口生成（`\dpi{300}` 高清、`\color{white}` 白字），三条公式分别下载后用 ImageMagick 铺 `#0f1419` 底色、左对齐垂直拼接。
 
 **不用手写 SVG 排版** —— 公式交给真正的 LaTeX 引擎渲染，字形与间距才有保证；SVG 手绘只用于流程图这类结构性图示（见 `tools/draw-*-svg.mjs`）。
 
-复现命令（编码后的公式串见 commit 历史）：
-
 ```bash
-curl -sL -o f1.png "https://latex.codecogs.com/png.latex?%5Cdpi%7B300%7D%20<pages公式>"
-curl -sL -o f2.png "https://latex.codecogs.com/png.latex?%5Cdpi%7B300%7D%20<S_i公式>"
-curl -sL -o f3.png "https://latex.codecogs.com/png.latex?%5Cdpi%7B300%7D%20<score公式>"
-magick f1.png f2.png f3.png -background white -gravity center -append -bordercolor white -border 40 adr16-formulas@2x.png
+# 公式串需 URL 编码；\color{white} 让字形变白，背景由 magick 铺
+curl -sL -o k1.png "https://latex.codecogs.com/png.latex?%5Cdpi%7B300%7D%20<urlencode(\color{white} 式①)>"
+curl -sL -o k2.png "https://latex.codecogs.com/png.latex?%5Cdpi%7B300%7D%20<urlencode(\color{white} 式②)>"
+curl -sL -o k3.png "https://latex.codecogs.com/png.latex?%5Cdpi%7B300%7D%20<urlencode(\color{white} 式③)>"
+for i in 1 2 3; do magick k$i.png -background '#0f1419' -alpha remove -alpha off kb$i.png; done
+magick kb1.png kb2.png kb3.png -background '#0f1419' -gravity west -append \
+       -bordercolor '#0f1419' -border 40 adr16-formulas@2x.png
 ```
+
+**两个坑**：
+
+1. `\bg_white` 参数会被当成公式内容渲染出来（图上直接出现 `\bg_white` 字面量）—— 不传背景参数，改由 magick 铺。
+2. 拼接要用 `-gravity west`（左对齐），用默认的 `center` 会让三条公式各自居中、左边缘参差。
