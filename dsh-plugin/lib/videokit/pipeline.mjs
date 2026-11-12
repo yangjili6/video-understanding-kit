@@ -1288,6 +1288,11 @@ const index = {
     },
     // 画面文字（气泡/招牌）：不属于字幕时间轴，单独一列（ADR-0013）
     screenText: (subs.screenText || []).map((x) => ({ t: x.t, text: x.text, conf: x.conf })),
+    // ADR-0017：画面文字按「区域」追踪，同一块位置的内容变化记进 textHistory
+    screenRegions: (subs.screenRegions || []).map((r) => ({
+      regionId: r.regionId, bbox: r.bbox, firstSeen: r.firstSeen, lastSeen: r.lastSeen,
+      textHistory: r.textHistory, state: r.state,
+    })),
     subsStatus,  // disabled | failed | completed（ADR-0015）
     // 关联层（ADR-0015）：视觉与文字各走各的，这里是按时间轴的只读关联结果
     relation: buildRelation(groups, subs),
