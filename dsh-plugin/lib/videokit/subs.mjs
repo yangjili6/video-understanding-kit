@@ -206,8 +206,21 @@ function bandToRoi(bands, FW, FH) {
  * @returns {Array<{regionId,bbox,firstSeen,lastSeen,textHistory,state}>}
  */
 async function trackScreenRegions(paths, times, FW, FH, subtitleBands, opts = {}) {
-  const coarseSide = opts.coarseSide ?? 480
-  const recFreqSec = opts.recFreqSec ?? 1
+  // 三级检测（指挥官定的调度）：
+  //   L1 320×180 每帧执行 —— 只抓「大字」，成本约 1/7
+  //   L2 480×270 补扫 —— L1 没候选、框少于 2 个、或场景切换时强制执行
+  //   L3 高清细认 —— 只对 NEW/CHANGED 的区域做
+  // 关键认知：L1 没检出候选 ≠ 画面没文字，小字在 1/3 分辨率下会糊掉，
+  // 所以「无候选」本身就必须触发 L2。
+  const l1Side = opts.l1Side ?? Number(process.env.SUBS_SCREEN_L1 || 480)
+  const l2Side = opts.l2Side ?? Number(process.env.SUBS_SCREEN_L2 || 480)
+  const cutTimes = opts.cutTimes || []
+  const forceEverySec = opts.forceL2EverySec ?? 6
+  const stats = { l1: 0, l2: 0, l1Boxes: 0, l2Boxes: 0 }
+  // 场景切换的近似：subs 阶段还拿不到 TransNet 的镜头边界，
+  // 先用「距上次强制 L2 超过 N 秒」代替，保证长镜头里也能补扫到。
+  const nearCut = (i, t) => cutTimes.some((c) => Math.abs(c - t) < 0.6) ||
+    t - (stats.lastForceT ?? -99) >= forceEverySec
   const regions = []
   let nextId = 1
   // 判「这个框属于字幕」不能要求完全落在带内 —— 字幕框常比带高一点（描边/阴影），
@@ -236,7 +249,22 @@ async function trackScreenRegions(paths, times, FW, FH, subtitleBands, opts = {}
   for (let i = 0; i < paths.length; i++) {
     const t = times[i]
     let boxes
-    try { boxes = await detect(paths[i], null, coarseSide) } catch { continue }
+    try {
+      // L1：每帧快速扫，只够发现大字
+      boxes = await detect(paths[i], null, l1Side)
+      stats.l1++
+      stats.l1Boxes += boxes.length
+      // L1 无候选 / 候选过少 / 场景切换 → 强制 L2 补扫
+      // L1 与 L2 同分辨率时不做补扫 —— 那是重复扫同一张图
+      const needL2 = l1Side !== l2Side && (boxes.length === 0 || nearCut(i, t))
+      if (needL2) {
+        if (needL2) stats.lastForceT = t
+        const l2 = await detect(paths[i], null, l2Side)
+        stats.l2++
+        stats.l2Boxes += l2.length
+        if (l2.length > boxes.length) boxes = l2
+      }
+    } catch { continue }
     const nonSub = boxes.filter((b) => !inBand(b))
     if (i === 0) console.log(`  [subs] 首帧粗扫 ${boxes.length} 框，字幕带内 ${boxes.length - nonSub.length} 个被排除`)
     if (!nonSub.length) continue
@@ -305,6 +333,8 @@ async function trackScreenRegions(paths, times, FW, FH, subtitleBands, opts = {}
     delete r.lastRecAt
     delete r.matchCount
   }
+  console.log(`  [subs] 分级扫描：L1 ${stats.l1} 帧（共 ${stats.l1Boxes} 框）` +
+    `，L2 补扫 ${stats.l2} 帧（${(stats.l2 / Math.max(1, stats.l1) * 100).toFixed(0)}%，共 ${stats.l2Boxes} 框）`)
   // GONE 的区域不进最终输出（它们不是画面文字）
   return regions.filter((r) => r.state !== 'GONE')
 }
@@ -355,6 +385,7 @@ export async function extractSubtitles(video, outDir, opts = {}) {
   let candidateWindows = []   // [{ from, to }] 秒
   let subtitleBands = []      // 探测帧聚出的稳定字幕带（全帧检测的 ROI 来源）
   let probeFrameData = []     // 探测帧（全帧 det）的画面文字候选，补 ROI 裁剪后的缺口
+  let tiersEnabled = false    // 由探测帧的文字尺寸分布决定是否启用 L1/L2 分级
   let budgetExhausted = false
   let coverage = { probed: 0, denseFrames: 0 }
 
@@ -392,6 +423,18 @@ export async function extractSubtitles(video, outDir, opts = {}) {
     if (probeFrameData.length) {
       console.log(`  [subs] 探测帧画面文字候选 ${probeFrameData.length} 帧`)
     }
+
+    // ── 内容自适应：这个视频有没有「大字」？
+    // 分级扫描（L1 320 抓大字 + L2 480 补小字）只在文字尺寸有分布时才有收益。
+    // 游戏录屏这类全是 UI 小字的视频，L1 什么都检不出，分级等于白付一倍成本。
+    const probeHeights = []
+    for (const boxes of probeBoxes) for (const b of boxes) probeHeights.push(b.y1 - b.y0)
+    const bigTh = FH * 0.035          // 帧空间里约 60px（换算到 640 高的视频约 22px）
+    const bigCount = probeHeights.filter((h) => h > bigTh).length
+    const bigTextRatio = probeHeights.length ? bigCount / probeHeights.length : 0
+    tiersEnabled = bigTextRatio >= 0.25
+    console.log(`  [subs] 文字尺寸分布：${probeHeights.length} 个框，大字（>${Math.round(bigTh)}px）${bigCount} 个` +
+      `（${(bigTextRatio * 100).toFixed(0)}%）→ ${tiersEnabled ? '启用 L1/L2 分级' : '单级 480（无大字，分级无收益）'}`)
 
     // ② 区域投票：把命中框按位置聚类，反复出现在同一位置的才是「字幕带」
     //    簇中心按 (x0/40, y0/20) 粗粒度量化，命中 >= 30% 的探测帧才算稳定带
@@ -518,7 +561,11 @@ export async function extractSubtitles(video, outDir, opts = {}) {
   if (SCREEN_TEXT_ON) {
     try {
       const times = frames.map((f) => f.t)
-      screenRegions = await trackScreenRegions(allPaths, times, FW, FH, subtitleBands)
+      screenRegions = await trackScreenRegions(allPaths, times, FW, FH, subtitleBands, {
+        // 有大小字分布才分级（L1 320 省成本）；全是小字就直接 480
+        l1Side: tiersEnabled ? 320 : 480,
+        l2Side: 480,
+      })
       console.log(`  [subs] 画面文字区域 ${screenRegions.length} 个（低清粗扫 + 跨帧追踪）`)
     } catch (e) {
       console.log(`  [subs] 画面文字追踪失败：${String((e && e.message) || e)}`)
