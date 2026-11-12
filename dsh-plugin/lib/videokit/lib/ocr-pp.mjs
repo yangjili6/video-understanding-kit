@@ -53,11 +53,13 @@ function magickBin() {
 }
 function isMagick7() { return magickBin() === 'magick' }
 
-function readRGB(path, outW, outH) {
+/** 读帧为 RGB。roi 存在时先裁剪再缩放 —— 字幕带只占画面一小块，
+ *  裁掉其余区域能让 det 的输入尺寸降一个量级（实测 960×540 → 960×80）。 */
+function readRGB(path, outW, outH, roi = null) {
   const bin = magickBin()
-  const args = isMagick7()
-    ? [path, '-resize', `${outW}x${outH}!`, '-depth', '8', 'rgb:-']
-    : [path, '-resize', `${outW}x${outH}!`, '-depth', '8', 'rgb:-']
+  const args = [path]
+  if (roi) args.push('-crop', `${roi.w}x${roi.h}+${roi.x}+${roi.y}`, '+repage')
+  args.push('-resize', `${outW}x${outH}!`, '-depth', '8', 'rgb:-')
   const buf = execFileSync(bin, args, { maxBuffer: 128 * 1024 * 1024 })
   return buf
 }
@@ -71,9 +73,10 @@ function identify(path) {
 }
 
 // det 推理：返回框（原图坐标）
-async function detect(path) {
+async function detect(path, roi = null) {
   const { detSession } = await getSessions()
-  const { w: W0, h: H0 } = identify(path)
+  // roi 存在时直接用它的尺寸，省掉一次 identify 进程调用
+  const { w: W0, h: H0 } = roi ? { w: roi.w, h: roi.h } : identify(path)
   // 缩放到 32 的倍数，长边 <= 960
   let scale = 1
   const longSide = Math.max(W0, H0)
@@ -83,7 +86,7 @@ async function detect(path) {
   let H = 32 * Math.round((H0 * scale) / 32)
   W = Math.max(W, 32)
   H = Math.max(H, 32)
-  const rgb = readRGB(path, W, H)
+  const rgb = readRGB(path, W, H, roi)
   // NHWC -> NCHW + normalize
   const data = new Float32Array(3 * H * W)
   const px = W * H
@@ -97,6 +100,7 @@ async function detect(path) {
   const prob = out[detSession.outputNames[0]].data // [1,1,H,W]
   // 阈值 + 连通域
   const boxes = dbPostprocess(prob, W, H, Number(process.env.DET_TH || 0.2), W0 / W, H0 / H)
+  if (roi) for (const b of boxes) { b.x0 += roi.x; b.x1 += roi.x; b.y0 += roi.y; b.y1 += roi.y }
   return boxes
 }
 

@@ -163,14 +163,14 @@ function detWorkerCount() {
   return full
 }
 
-function runDetWorker(frames) {
+function runDetWorker(frames, roi = null) {
   return new Promise((resolve, reject) => {
     let settled = false
     let w
     const t0 = Date.now()
     let readyMs = null
     try {
-      w = new Worker(new URL('./lib/ocr-det-worker.mjs', import.meta.url), { workerData: { frames } })
+      w = new Worker(new URL('./lib/ocr-det-worker.mjs', import.meta.url), { workerData: { frames, roi } })
     } catch (e) { reject(e); return }
     const done = (fn, v) => { if (settled) return; settled = true; w.terminate().catch(() => {}); fn(v) }
     w.on('message', (m) => {
@@ -183,18 +183,31 @@ function runDetWorker(frames) {
   })
 }
 
-async function detectFramesParallel(paths, concurrency = detWorkerCount()) {
+/** 把多条字幕带合并成一个 ROI（带 padding）。带为空时返回 null（退回全帧检测）。
+ *  字幕带是在探测帧的帧空间里算出来的，全量帧同尺寸，可直接用。 */
+function bandToRoi(bands, FW, FH) {
+  if (!bands || !bands.length) return null
+  const PAD_X = 24, PAD_Y = 14
+  const x0 = Math.max(0, Math.min(...bands.map((b) => b.x0)) - PAD_X)
+  const y0 = Math.max(0, Math.min(...bands.map((b) => b.y0)) - PAD_Y)
+  const x1 = Math.min(FW, Math.max(...bands.map((b) => b.x1)) + PAD_X)
+  const y1 = Math.min(FH, Math.max(...bands.map((b) => b.y1)) + PAD_Y)
+  if (x1 <= x0 || y1 <= y0) return null
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+}
+
+async function detectFramesParallel(paths, concurrency = detWorkerCount(), roi = null) {
   if (paths.length === 0) return []
   if (paths.length <= concurrency * 2) {
     // 帧太少，开 worker 反而亏（每个 worker 要加载一次模型）
     const out = []
-    for (const p of paths) { try { out.push(await detect(p)) } catch { out.push([]) } }
+    for (const p of paths) { try { out.push(await detect(p, roi)) } catch { out.push([]) } }
     return out
   }
   const per = Math.ceil(paths.length / concurrency)
   const chunks = []
   for (let i = 0; i < paths.length; i += per) chunks.push(paths.slice(i, i + per))
-  const workers = chunks.map((c) => runDetWorker(c))
+  const workers = chunks.map((c) => runDetWorker(c, roi))
   const tPar = Date.now()
   const parts = await Promise.all(workers)
   console.log(`  [timing] 并行检测墙钟 ${Date.now() - tPar}ms（含 worker 启动）`)
@@ -227,6 +240,7 @@ export async function extractSubtitles(video, outDir, opts = {}) {
   const budgetLeft = () => OCR_BUDGET_MS - (Date.now() - tOcrStart)
   const PROBE_N = Number(process.env.SUBS_PROBE_N ?? 16)
   let candidateWindows = []   // [{ from, to }] 秒
+  let subtitleBands = []      // 探测帧聚出的稳定字幕带（全帧检测的 ROI 来源）
   let budgetExhausted = false
   let coverage = { probed: 0, denseFrames: 0 }
 
@@ -255,7 +269,7 @@ export async function extractSubtitles(video, outDir, opts = {}) {
       rec.n++; rec.x0 += h.box.x0; rec.y0 += h.box.y0; rec.x1 += h.box.x1; rec.y1 += h.box.y1
       bandVotes.set(k, rec)
     }
-    const subtitleBands = []
+    subtitleBands = []
     for (const rec of bandVotes.values()) {
       if (rec.n / Math.max(1, hits.length) < 0.3) continue
       subtitleBands.push({
@@ -304,7 +318,13 @@ export async function extractSubtitles(video, outDir, opts = {}) {
   const loadAtDecision = detectLoad(CPU_TOPOLOGY)
   const detWorkers = detWorkerCount()
     stageMark('预探测')
-  const allBoxes = await detectFramesParallel(allPaths, detWorkers)
+  // 字幕带已知时只检测带内区域：det 输入从 960×540 降到 960×80 量级，
+  // 推理与后处理都按面积降一个量级。画面文字（others）由稀疏探测帧单独覆盖。
+  const ocrRoi = bandToRoi(subtitleBands, FW, FH)
+  if (ocrRoi) {
+    console.log(`  [subs] ROI 裁剪：只检测字幕带 x=${ocrRoi.x} y=${ocrRoi.y} ${ocrRoi.w}×${ocrRoi.h}（占全帧 ${((ocrRoi.w * ocrRoi.h) / (FW * FH) * 100).toFixed(1)}%）`)
+  }
+  const allBoxes = await detectFramesParallel(allPaths, detWorkers, ocrRoi)
   stageMark('全量检测')
   const statDetMs = Date.now() - _td0
   const frames = []
