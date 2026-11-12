@@ -35,7 +35,7 @@
 | 198 帧 / 33 页 | 均匀 | 8/8 | 0.34s |
 | 198 帧 / 33 页 | 多信号加权 | 8/8 | 0.25s |
 
-完整决策记录见 [docs/ADR-0013-sampling-final-tradeoff.md](docs/ADR-0013-sampling-final-tradeoff.md)。
+完整决策记录见 [docs/ADR-0016-sampling-final-tradeoff.md](docs/ADR-0016-sampling-final-tradeoff.md)。
 
 ### 代价
 - 1.5fps 样本池让 OCR 耗时从 185s 涨到约 600s（电池 41℃ 时走串行）。端侧加速未做。
