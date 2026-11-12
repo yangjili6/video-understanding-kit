@@ -146,3 +146,20 @@
 > **我们花了一整天优化「该把帧花在哪」，最后数据说：先保证「花得均匀」。**
 >
 > **加权不是错，是过早**——它需要更可靠的"重要性"信号，而目前手上的五个信号都不够好。
+
+---
+
+## 公式图的生成方式
+
+`diagrams/adr16-formulas@2x.png` 由 [latex.codecogs.com](https://latex.codecogs.com) 的 PNG 接口生成（`\dpi{300}` 高清），三条公式分别下载后用 ImageMagick 垂直拼接、铺白底。
+
+**不用手写 SVG 排版** —— 公式交给真正的 LaTeX 引擎渲染，字形与间距才有保证；SVG 手绘只用于流程图这类结构性图示（见 `tools/draw-*-svg.mjs`）。
+
+复现命令（编码后的公式串见 commit 历史）：
+
+```bash
+curl -sL -o f1.png "https://latex.codecogs.com/png.latex?%5Cdpi%7B300%7D%20<pages公式>"
+curl -sL -o f2.png "https://latex.codecogs.com/png.latex?%5Cdpi%7B300%7D%20<S_i公式>"
+curl -sL -o f3.png "https://latex.codecogs.com/png.latex?%5Cdpi%7B300%7D%20<score公式>"
+magick f1.png f2.png f3.png -background white -gravity center -append -bordercolor white -border 40 adr16-formulas@2x.png
+```
