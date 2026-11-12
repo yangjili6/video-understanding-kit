@@ -7,6 +7,7 @@ import { mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { detect, recognizeCrop } from './lib/ocr-pp.mjs'
+import { clusterBoxes, matchRegions, pushTextHistory } from './lib/screen-region.mjs'
 
 const run = (c, a, o = {}) => execFileSync(c, a, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], ...o })
 
@@ -191,6 +192,94 @@ function bandToRoi(bands, FW, FH) {
   const y1 = Math.min(FH, Math.max(...bands.map((b) => b.y1)) + PAD_Y)
   if (x1 <= x0 || y1 <= y0) return null
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+}
+
+/**
+ * 画面文字的区域级追踪（ADR-0017 最小可用版）。
+ *
+ * 做法：逐帧低清粗扫（480）→ 排除字幕带 → 空间聚类 → 与已有 region 匹配
+ * → NEW/CHANGED 的做一次高清细认。扫描复用（STATIC/LOST）留到下一版。
+ *
+ * @returns {Array<{regionId,bbox,firstSeen,lastSeen,textHistory,state}>}
+ */
+async function trackScreenRegions(paths, times, FW, FH, subtitleBands, opts = {}) {
+  const coarseSide = opts.coarseSide ?? 480
+  const recFreqSec = opts.recFreqSec ?? 1
+  const regions = []
+  let nextId = 1
+  // 判「这个框属于字幕」不能要求完全落在带内 —— 字幕框常比带高一点（描边/阴影），
+  // 用「与带的重叠面积占自身一半以上」更稳。
+  const overlapRatio = (b, s) => {
+    const x0 = Math.max(b.x0, s.x0), x1 = Math.min(b.x1, s.x1)
+    const y0 = Math.max(b.y0, s.y0), y1 = Math.min(b.y1, s.y1)
+    if (x1 <= x0 || y1 <= y0) return 0
+    const inter = (x1 - x0) * (y1 - y0)
+    const area = Math.max(1, (b.x1 - b.x0) * (b.y1 - b.y0))
+    return inter / area
+  }
+  // 两个判据取或：中心点落在带内（字幕框常比带高，靠重叠率会漏），
+  // 或与带的重叠占自身 30% 以上（跨行字幕）。
+  const inBand = (b) => {
+    const cx = (b.x0 + b.x1) / 2
+    const cy = (b.y0 + b.y1) / 2
+    return subtitleBands.some((s) => {
+      const inside = cx >= s.x0 - 12 && cx <= s.x1 + 12 && cy >= s.y0 - 12 && cy <= s.y1 + 12
+      return inside || overlapRatio(b, s) > 0.3
+    })
+  }
+  console.log(`  [subs] 区域追踪入参：字幕带 ${subtitleBands.length} 条 ${JSON.stringify(subtitleBands.map(b=>[b.x0,b.y0,b.x1,b.y1]))}`)
+
+  // ── 第一遍：逐帧粗扫 + 聚类 + 匹配 ──
+  for (let i = 0; i < paths.length; i++) {
+    const t = times[i]
+    let boxes
+    try { boxes = await detect(paths[i], null, coarseSide) } catch { continue }
+    const nonSub = boxes.filter((b) => !inBand(b))
+    if (i === 0) console.log(`  [subs] 首帧粗扫 ${boxes.length} 框，字幕带内 ${boxes.length - nonSub.length} 个被排除`)
+    if (!nonSub.length) continue
+    const clusters = clusterBoxes(nonSub, FW, FH)
+    if (!clusters.length) continue
+    // regions 的元素是 {regionId, bbox, ...}，matchRegions 要的是扁平 bbox
+    const { pairs, unmatchedBoxes } = matchRegions(regions.map((r) => r.bbox), clusters)
+    for (const [ri, ci] of pairs) {
+      const r = regions[ri]
+      r.lastSeen = t
+      r.bbox = clusters[ci]
+      r.pendingFile = paths[i]
+    }
+    for (const ci of unmatchedBoxes) {
+      regions.push({
+        regionId: 'r' + String(nextId++).padStart(3, '0'),
+        bbox: clusters[ci],
+        firstSeen: t,
+        lastSeen: t,
+        textHistory: [],
+        state: 'NEW',
+        pendingFile: paths[i],
+        lastRecAt: -99,
+      })
+    }
+  }
+
+  // ── 第二遍：对每个 region 做一次高清细认（按频率上限节流） ──
+  for (const r of regions) {
+    if (!r.pendingFile) continue
+    if (r.lastSeen - r.lastRecAt < recFreqSec && r.textHistory.length) continue
+    try {
+      const { text, conf } = await recognizeCrop(r.pendingFile, padBox(r.bbox))
+      const clean = (text || '').trim()
+      if (clean.length >= 2 && conf >= 0.45) {
+        r.textHistory = pushTextHistory(r.textHistory, clean)
+        r.state = 'CHANGED'
+        r.lastRecAt = r.lastSeen
+      } else {
+        r.state = 'STABLE'
+      }
+    } catch { r.state = 'STABLE' }
+    delete r.pendingFile
+  }
+  for (const r of regions) delete r.lastRecAt
+  return regions
 }
 
 async function detectFramesParallel(paths, concurrency = detWorkerCount(), roi = null) {
@@ -394,9 +483,22 @@ export async function extractSubtitles(video, outDir, opts = {}) {
     } catch { /* skip */ }
   }
 
-  // 画面文字：按「文字状态变化」触发识别，不再固定每 2 秒读一次。
-  // 检测已全量做过（others 就是检测框），贵的只有 recognizeCrop。
-  // 判定：这一帧的框集合与上一状态比，数量和位置是否明显变化。
+  // ── 画面文字（ADR-0017）：区域级追踪 ──
+  // ROI 裁剪后全量 det 只看得到字幕带，画面文字（参数标注 / 图表数字 / 界面文字）
+  // 改走独立通道：低清粗扫 → 排除字幕带 → 聚类 → 跨帧匹配 → 只对 NEW/CHANGED 细认。
+  const SCREEN_TEXT_ON = process.env.SUBS_SCREEN_TEXT !== '0'
+  let screenRegions = []
+  if (SCREEN_TEXT_ON) {
+    try {
+      const times = frames.map((f) => f.t)
+      screenRegions = await trackScreenRegions(allPaths, times, FW, FH, subtitleBands)
+      console.log(`  [subs] 画面文字区域 ${screenRegions.length} 个（低清粗扫 + 跨帧追踪）`)
+    } catch (e) {
+      console.log(`  [subs] 画面文字追踪失败：${String((e && e.message) || e)}`)
+    }
+  }
+
+  // 旧路径：按「文字状态变化」触发识别（SUBS_SCREEN_TEXT=0 时保留原行为，便于对照）
   const screenText = []
   try {
     let lastKey = null
@@ -455,6 +557,7 @@ export async function extractSubtitles(video, outDir, opts = {}) {
     merged.loadLevel = loadAtDecision.level
     merged.tempC = loadAtDecision.tempC ?? null
     merged.screenText = screenText
+    merged.screenRegions = screenRegions
   } catch { /* 展示信息，失败不影响主流程 */ }
   return merged
 }
