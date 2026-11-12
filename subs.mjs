@@ -6,7 +6,7 @@ import { detectCpuTopology, computeConcurrency, detectLoad } from './lib/cpu.mjs
 import { mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { detect, recognizeCrop } from './lib/ocr-pp.mjs'
+import { detect, recognizeCrop, splitLines } from './lib/ocr-pp.mjs'
 import { clusterBoxes, matchRegions, pushTextHistory } from './lib/screen-region.mjs'
 
 const run = (c, a, o = {}) => execFileSync(c, a, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], ...o })
@@ -309,11 +309,20 @@ async function trackScreenRegions(paths, times, FW, FH, subtitleBands, opts = {}
     for (const t of sampleT) {
       const { file } = fileAt(t)
       try {
-        const { text, conf } = await recognizeCrop(file, padBox(r.bbox))
-        const clean = (text || '').trim()
-        if (clean.length >= 2 && conf >= 0.45) {
-          r.textHistory = pushTextHistory(r.textHistory, clean)
+        // 先按水平投影切行 —— 多行气泡直接整块喂 rec 只会读出一行
+        const lines = await splitLines(file, r.bbox)
+        const parts = []
+        for (const lb of lines) {
+          const pb = padBox(lb)
+          const { text, conf } = await recognizeCrop(file, pb)
+          const clean = (text || '').trim()
+          if (clean.length >= 2 && conf >= 0.45) parts.push(clean)
+        }
+        const joined = parts.join(' ')
+        if (joined.length >= 2) {
+          r.textHistory = pushTextHistory(r.textHistory, joined)
           gotAny = true
+          if (lines.length > 1) r.lineCount = Math.max(r.lineCount || 1, lines.length)
         }
       } catch { /* 单点失败不影响其它采样点 */ }
     }
