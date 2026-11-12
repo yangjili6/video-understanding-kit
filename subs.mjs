@@ -246,6 +246,7 @@ async function trackScreenRegions(paths, times, FW, FH, subtitleBands, opts = {}
       r.lastSeen = t
       r.bbox = clusters[ci]
       r.pendingFile = paths[i]
+      r.matchCount = (r.matchCount || 1) + 1
     }
     for (const ci of unmatchedBoxes) {
       regions.push({
@@ -257,29 +258,52 @@ async function trackScreenRegions(paths, times, FW, FH, subtitleBands, opts = {}
         state: 'NEW',
         pendingFile: paths[i],
         lastRecAt: -99,
+        matchCount: 1,
       })
     }
   }
 
-  // ── 第二遍：对每个 region 做一次高清细认（按频率上限节流） ──
-  for (const r of regions) {
-    if (!r.pendingFile) continue
-    if (r.lastSeen - r.lastRecAt < recFreqSec && r.textHistory.length) continue
-    try {
-      const { text, conf } = await recognizeCrop(r.pendingFile, padBox(r.bbox))
-      const clean = (text || '').trim()
-      if (clean.length >= 2 && conf >= 0.45) {
-        r.textHistory = pushTextHistory(r.textHistory, clean)
-        r.state = 'CHANGED'
-        r.lastRecAt = r.lastSeen
-      } else {
-        r.state = 'STABLE'
-      }
-    } catch { r.state = 'STABLE' }
-    delete r.pendingFile
+  // ── 第二遍：多时间点采样细认 ──
+  // 单点识别有两个毛病：① 只采 lastSeen 一帧，内容可能早变了；
+  // ② 位置一直有东西（游戏 UI、画面中央的连续变化物）会被误判成「文字区域」。
+  // 所以每个区域在存活区间里采 3 个点，全读不出就判 GONE，不再续命。
+  const fileAt = (t) => {
+    let lo = 0, hi = times.length - 1
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (times[mid] < t) lo = mid + 1; else hi = mid }
+    return { file: paths[lo], t: times[lo] }
   }
-  for (const r of regions) delete r.lastRecAt
-  return regions
+  for (const r of regions) {
+    const span = r.lastSeen - r.firstSeen
+    const sampleT = span >= 2
+      ? [r.firstSeen, r.firstSeen + span / 2, r.lastSeen]
+      : [r.lastSeen]
+    let gotAny = false
+    for (const t of sampleT) {
+      const { file } = fileAt(t)
+      try {
+        const { text, conf } = await recognizeCrop(file, padBox(r.bbox))
+        const clean = (text || '').trim()
+        if (clean.length >= 2 && conf >= 0.45) {
+          r.textHistory = pushTextHistory(r.textHistory, clean)
+          gotAny = true
+        }
+      } catch { /* 单点失败不影响其它采样点 */ }
+    }
+    if (gotAny) {
+      r.state = 'CHANGED'
+    } else if (r.matchCount >= 5 && span >= 3) {
+      // 位置稳定存在好一会儿、却一个字都读不出：不是文字区域
+      r.state = 'GONE'
+    } else {
+      r.state = 'STABLE'
+    }
+    r.sampleCount = sampleT.length
+    delete r.pendingFile
+    delete r.lastRecAt
+    delete r.matchCount
+  }
+  // GONE 的区域不进最终输出（它们不是画面文字）
+  return regions.filter((r) => r.state !== 'GONE')
 }
 
 async function detectFramesParallel(paths, concurrency = detWorkerCount(), roi = null) {
