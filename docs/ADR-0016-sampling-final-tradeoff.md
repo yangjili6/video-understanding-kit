@@ -158,29 +158,3 @@
 > **我们花了一整天优化「该把帧花在哪」，最后数据说：先保证「花得均匀」。**
 >
 > **加权不是错，是过早**——它需要更可靠的"重要性"信号，而目前手上的五个信号都不够好。
-
----
-
-## 公式图的生成方式
-
-三张公式图（`diagrams/adr16-f1-budget@2x.png` / `f2-signals` / `f3-score`）由 [latex.codecogs.com](https://latex.codecogs.com) 的 PNG 接口生成：`\dpi{300}` 高清、`\color{white}` 白字，再用 ImageMagick 铺 `#0f1419` 深底、加 36px 边距。
-
-**一图一公式**，不要拼在一起 —— 拼图会让三条公式挤成一块，读的时候分不清边界。
-
-**公式交给真正的 LaTeX 引擎渲染**；SVG 手绘只用于流程图这类结构性图示（见 `tools/draw-*-svg.mjs`）。
-
-```bash
-# 公式串需 URL 编码；\color{white} 让字形变白，背景由 magick 铺
-curl -sL -o k1.png "https://latex.codecogs.com/png.latex?%5Cdpi%7B300%7D%20<urlencode(\color{white} 式①)>"
-curl -sL -o k2.png "https://latex.codecogs.com/png.latex?%5Cdpi%7B300%7D%20<urlencode(\color{white} 式②)>"
-curl -sL -o k3.png "https://latex.codecogs.com/png.latex?%5Cdpi%7B300%7D%20<urlencode(\color{white} 式③)>"
-for i in 1 2 3; do
-  magick k$i.png -background '#0f1419' -alpha remove -alpha off \
-         -bordercolor '#0f1419' -border 36 adr16-f$i@2x.png
-done
-```
-
-**两个坑**：
-
-1. `\bg_white` 参数会被当成公式内容渲染出来（图上直接出现 `\bg_white` 字面量）—— 不传背景参数，改由 magick 铺。
-2. 拼接要用 `-gravity west`（左对齐）；用默认 `center` 会让三条公式各自居中、左边缘参差。**更好的做法是一图一公式，不拼。**
