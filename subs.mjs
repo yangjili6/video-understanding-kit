@@ -238,6 +238,7 @@ export async function extractSubtitles(video, outDir, opts = {}) {
   const PROBE_N = Number(process.env.SUBS_PROBE_N ?? 16)
   let candidateWindows = []   // [{ from, to }] 秒
   let subtitleBands = []      // 探测帧聚出的稳定字幕带（全帧检测的 ROI 来源）
+  let probeFrameData = []     // 探测帧（全帧 det）的画面文字候选，补 ROI 裁剪后的缺口
   let budgetExhausted = false
   let coverage = { probed: 0, denseFrames: 0 }
 
@@ -257,6 +258,25 @@ export async function extractSubtitles(video, outDir, opts = {}) {
       console.log('  [subs] 全程没有字幕候选，跳过全量 OCR（画面文字未扫描，不等于全片无文字）')
       return []
     }
+    // ①.5 画面文字候选：ROI 裁剪后全量 det 只看得到字幕带，
+    // 画面里的招牌 / 界面 / 气泡文字要靠这批全帧探测帧补齐。
+    for (let k = 0; k < probeIdx.length; k++) {
+      const boxes = probeBoxes[k] || []
+      if (!boxes.length) continue
+      const m = selectSubtitleLine(boxes, FW, FH)
+      const ot = boxes.filter((b) => {
+        if (m && Math.abs(b.x0 - m.x0) < 10 && Math.abs(b.y0 - m.y0) < 10) return false
+        const w = b.x1 - b.x0, h = b.y1 - b.y0
+        return w > FW * 0.04 && h > FH * 0.015 && h < FH * 0.35
+      })
+      if (ot.length) {
+        probeFrameData.push({ t: probeIdx[k] / FPS, file: join(frameDir, files[probeIdx[k]]), others: ot })
+      }
+    }
+    if (probeFrameData.length) {
+      console.log(`  [subs] 探测帧画面文字候选 ${probeFrameData.length} 帧`)
+    }
+
     // ② 区域投票：把命中框按位置聚类，反复出现在同一位置的才是「字幕带」
     //    簇中心按 (x0/40, y0/20) 粗粒度量化，命中 >= 30% 的探测帧才算稳定带
     const bandVotes = new Map()
@@ -385,7 +405,8 @@ export async function extractSubtitles(video, outDir, opts = {}) {
       .map((b) => `${Math.round(b.x0 / 40)},${Math.round(b.y0 / 20)},${Math.round((b.x1 - b.x0) / 40)}`)
       .sort()
       .join('|')
-    for (const fr of frames) {
+    const screenPool = frames.concat(probeFrameData).sort((a, b) => a.t - b.t)
+    for (const fr of screenPool) {
       if (!fr.others || !fr.others.length) { lastKey = null; continue }
       const key = keyOf(fr.others)
       // 状态变了才识别；同一状态最多再隔 6 秒复核一次（防检测抖动导致长时间不读）
