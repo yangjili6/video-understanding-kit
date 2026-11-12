@@ -33,33 +33,37 @@
   骨架 + 镜头补缺 + 多信号加权加密
 ```
 
-**动态预算**（采纳 GPT 方案）：
+**动态预算**（决定有多少页可看）：
 
-![ADR-0016 的三条核心公式](diagrams/adr16-formulas@2x.png)
+![动态预算](diagrams/adr16-f1-budget@2x.png)
 
-三条公式自上而下依次为：动态预算、五信号评分、间隙评分。式中各符号含义如下。
+**页面预算**：在时长 <i>T</i> 下按每页 6 秒推算，并夹在 8–36 页之间；**样本池**取预算帧数的 1.5 倍，否则池子等于预算，"采样"就退化成"全用"。
 
-**符号说明**
+**五路信号加权**（仅 `full` 模式使用，决定该把帧花在哪）：
 
-| 符号 | 含义 | 取值 / 计算方式 |
-|---|---|---|
-| `T` | 视频时长 | 秒 |
-| `pages` | 网格页数 | 由式①计算，夹在 8–36 |
-| `F_budget` | 预算帧数 | `6 × pages` |
-| `F_pool` | 样本池帧数 | `1.5 × F_budget` |
-| `S_i` | 第 i 个候选窗口的信息价值 | 0–1，五信号加权 |
-| `C_i` | 画面变化 | 直方图帧差 |
-| `M_i` | 运动强度 | 块差异 |
-| `A_i` | 音频密度 | 由字幕密度近似 |
-| `O_i` | 字幕存在性 | 0 / 1 |
-| `T_i` | 时间结构 | 是否邻近镜头边界 |
-| `Δt_ij` | 候选间隙长度 | 秒 |
-| `v_ij` | 该段信号评分 | 同 `S_i`，取段内均值 |
-| `score_ij` | 间隙评分 | 越大越优先加密 |
+![五信号评分](diagrams/adr16-f2-signals@2x.png)
 
-各项信号先按视频自身中位数归一化到 0–3 再截断；式②中的权重 0.25 / 0.20 / 0.20 / 0.15 / 0.20 是起点，未做调参。式③的 0.35 是下限，避免纯静态段被完全饿死。
+**间隙评分**（决定下一个点插在哪）：
 
-样本池取预算的 **1.5 倍** —— 否则池子等于预算，「采样」退化成「全用」，加权无从发挥。
+![间隙评分](diagrams/adr16-f3-score@2x.png)
+
+其中：
+
+- **<i>T</i>**：视频时长（秒）
+- **<i>pages</i>**：网格页数，由第一式算出并夹在 8–36
+- **<i>F</i><sub>budget</sub>**：预算帧数，等于 6 × pages
+- **<i>F</i><sub>pool</sub>**：样本池帧数，等于 1.5 × F<sub>budget</sub>
+- **<i>S</i><sub>i</sub>**：第 i 个候选窗口的信息价值（0–1）
+- **<i>C</i><sub>i</sub>**：画面变化（直方图帧差）
+- **<i>M</i><sub>i</sub>**：运动强度（块差异）
+- **<i>A</i><sub>i</sub>**：音频密度（由字幕密度近似）
+- **<i>O</i><sub>i</sub>**：字幕存在性（0 / 1）
+- **<i>T</i><sub>i</sub>**：时间结构（是否邻近镜头边界）
+- **<i>Δt</i><sub>ij</sub>**：候选间隙长度（秒）
+- **<i>v</i><sub>ij</sub>**：该段信号评分（同 S<sub>i</sub>，取段内均值）
+- **<i>score</i><sub>ij</sub>**：间隙评分，越大越优先加密
+
+各项信号先按视频自身中位数归一化到 0–3 再截断；第二式的权重 0.25 / 0.20 / 0.20 / 0.15 / 0.20 是起点，未做调参。第三式的 0.35 是下限，避免纯静态段被完全饿死。
 
 **预算语义：上限，不是配额。**
 
@@ -157,21 +161,24 @@
 
 ## 公式图的生成方式
 
-`diagrams/adr16-formulas@2x.png` 由 [latex.codecogs.com](https://latex.codecogs.com) 的 PNG 接口生成（`\dpi{300}` 高清、`\color{white}` 白字），三条公式分别下载后用 ImageMagick 铺 `#0f1419` 底色、左对齐垂直拼接。
+三张公式图（`diagrams/adr16-f1-budget@2x.png` / `f2-signals` / `f3-score`）由 [latex.codecogs.com](https://latex.codecogs.com) 的 PNG 接口生成：`\dpi{300}` 高清、`\color{white}` 白字，再用 ImageMagick 铺 `#0f1419` 深底、加 36px 边距。
 
-**不用手写 SVG 排版** —— 公式交给真正的 LaTeX 引擎渲染，字形与间距才有保证；SVG 手绘只用于流程图这类结构性图示（见 `tools/draw-*-svg.mjs`）。
+**一图一公式**，不要拼在一起 —— 拼图会让三条公式挤成一块，读的时候分不清边界。
+
+**公式交给真正的 LaTeX 引擎渲染**；SVG 手绘只用于流程图这类结构性图示（见 `tools/draw-*-svg.mjs`）。
 
 ```bash
 # 公式串需 URL 编码；\color{white} 让字形变白，背景由 magick 铺
 curl -sL -o k1.png "https://latex.codecogs.com/png.latex?%5Cdpi%7B300%7D%20<urlencode(\color{white} 式①)>"
 curl -sL -o k2.png "https://latex.codecogs.com/png.latex?%5Cdpi%7B300%7D%20<urlencode(\color{white} 式②)>"
 curl -sL -o k3.png "https://latex.codecogs.com/png.latex?%5Cdpi%7B300%7D%20<urlencode(\color{white} 式③)>"
-for i in 1 2 3; do magick k$i.png -background '#0f1419' -alpha remove -alpha off kb$i.png; done
-magick kb1.png kb2.png kb3.png -background '#0f1419' -gravity west -append \
-       -bordercolor '#0f1419' -border 40 adr16-formulas@2x.png
+for i in 1 2 3; do
+  magick k$i.png -background '#0f1419' -alpha remove -alpha off \
+         -bordercolor '#0f1419' -border 36 adr16-f$i@2x.png
+done
 ```
 
 **两个坑**：
 
 1. `\bg_white` 参数会被当成公式内容渲染出来（图上直接出现 `\bg_white` 字面量）—— 不传背景参数，改由 magick 铺。
-2. 拼接要用 `-gravity west`（左对齐），用默认的 `center` 会让三条公式各自居中、左边缘参差。
+2. 拼接要用 `-gravity west`（左对齐）；用默认 `center` 会让三条公式各自居中、左边缘参差。**更好的做法是一图一公式，不拼。**
