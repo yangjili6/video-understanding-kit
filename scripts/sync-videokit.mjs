@@ -32,6 +32,7 @@ const FILES = [
   'lib/ocr-det-worker.mjs',
   'lib/cpu.mjs',
   'lib/dedup.mjs',
+  'lib/frame-dedup.mjs',
   'tools/calibrate.mjs',
 ]
 

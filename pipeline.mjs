@@ -18,6 +18,7 @@ import { join, dirname } from 'node:path'
 import { transcribeVideo } from './asr.mjs'
 import { detectCuts } from './lib/transnet-lib.mjs'
 import { dedupPages, setDedupTmp } from './lib/dedup.mjs'
+import { dedupFrames } from './lib/frame-dedup.mjs'
 import { extractSubtitles, dumpStageTiming, resetStageTiming } from './subs.mjs'
 
 // ---------------------------------------------------------------- 参数
@@ -1148,8 +1149,23 @@ async function main() {
     '帧间隔 ' + coverage.report.maxFrameGapSec + 's（上限 ' + coverage.report.maxGapLimitSec + 's）' +
     (coverage.report.satisfied ? '' : '  ⚠️ ' + coverage.report.reason),
   )
+  // 帧级去重（ADR-0018）：运动门控 → pHash → 时间保底。
+  // 放在分组之前 —— 帧少了，组内帧少、拼页少、VLM 要读的页也少。
+  let frameDedupResult = null
+  let effectiveFrames = displaySet
+  if (process.env.FRAME_DEDUP !== '0') {
+    try {
+      const fd = dedupFrames(displaySet)
+      frameDedupResult = fd
+      effectiveFrames = fd.kept
+      console.log(`[5c] 帧级去重：${fd.stats.total} → ${fd.stats.kept} 帧（去 ${fd.stats.dropped}，` +
+        `${(fd.stats.ratio * 100).toFixed(1)}%；运动门控 ${fd.stats.motionSkipped}，pHash ${fd.stats.hashSkipped}）`)
+    } catch (e) {
+      console.log('[5c] 帧级去重失败，按原样继续：' + String((e && e.message) || e))
+    }
+  }
   const tGroupStart = Date.now()
-  const { groups, boundaries } = buildGroups(displaySet, segs, histDiffs, hists, duration, cutTimes)
+  const { groups, boundaries } = buildGroups(effectiveFrames, segs, histDiffs, hists, duration, cutTimes)
   // 不再合并组：页数由采样预算决定，组数只影响语义归属。
   // 需要合并组的旧路径见 mergeGroupsToTarget（保留但不再调用）。
   const pages = await buildPages(groups, height > width)
@@ -1306,6 +1322,7 @@ const index = {
     detWorkers: Number.isFinite(Number(subs.detWorkers)) ? Number(subs.detWorkers) : null,
     loadLevel: subs.loadLevel ?? null,
     tempC: Number.isFinite(Number(subs.tempC)) ? Number(subs.tempC) : null,
+    frameDedup: frameDedupResult ? frameDedupResult.stats : null,
     dedup: dedupResult ? {
       globalSim: 6, roiChange: 10,
       kept: dedupResult.kept.map((x) => ({ page: x.page, file: x.file, reason: x.dedupReason, visualGroup: x.visualGroup ?? null })),
