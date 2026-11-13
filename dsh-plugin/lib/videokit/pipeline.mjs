@@ -1026,6 +1026,13 @@ async function main() {
       return detectCuts(VIDEO, { fps: 5, thr: 0.5 }).then((r) => ({ ...r, fallback: true }))
     })
 
+  // 串行模式下必须先把 TransNet 跑完再开 OCR —— 否则两个 onnxruntime-web session
+  // 会同时在主线程里跑，WASM 后端报 "Session already started"。
+  // 走 worker 时不用等（worker 有独立的 WASM 实例）。
+  if (effectiveSerial) {
+    try { await transnetJob } catch { /* 错误留给后面统一处理 */ }
+  }
+
   // 主线程同时跑 ASR（与 worker 并行）
   let cues = []
   if (ASR) {
