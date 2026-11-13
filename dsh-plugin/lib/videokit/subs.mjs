@@ -10,7 +10,6 @@ import { mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { detect, recognizeCrop, splitLines } from './lib/ocr-pp.mjs'
-import { clusterBoxes, matchRegions, pushTextHistory } from './lib/screen-region.mjs'
 
 const run = (c, a, o = {}) => execFileSync(c, a, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], ...o })
 
@@ -195,157 +194,6 @@ function bandToRoi(bands, FW, FH) {
   const y1 = Math.min(FH, Math.max(...bands.map((b) => b.y1)) + PAD_Y)
   if (x1 <= x0 || y1 <= y0) return null
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
-}
-
-/**
- * 画面文字的区域级追踪（ADR-0017 最小可用版）。
- *
- * 做法：逐帧低清粗扫（480）→ 排除字幕带 → 空间聚类 → 与已有 region 匹配
- * → NEW/CHANGED 的做一次高清细认。扫描复用（STATIC/LOST）留到下一版。
- *
- * @returns {Array<{regionId,bbox,firstSeen,lastSeen,textHistory,state}>}
- */
-async function trackScreenRegions(paths, times, FW, FH, subtitleBands, opts = {}) {
-  // 三级检测（指挥官定的调度）：
-  //   L1 320×180 每帧执行 —— 只抓「大字」，成本约 1/7
-  //   L2 480×270 补扫 —— L1 没候选、框少于 2 个、或场景切换时强制执行
-  //   L3 高清细认 —— 只对 NEW/CHANGED 的区域做
-  // 关键认知：L1 没检出候选 ≠ 画面没文字，小字在 1/3 分辨率下会糊掉，
-  // 所以「无候选」本身就必须触发 L2。
-  const l1Side = opts.l1Side ?? Number(process.env.SUBS_SCREEN_L1 || 480)
-  const l2Side = opts.l2Side ?? Number(process.env.SUBS_SCREEN_L2 || 480)
-  const cutTimes = opts.cutTimes || []
-  const forceEverySec = opts.forceL2EverySec ?? 6
-  const stats = { l1: 0, l2: 0, l1Boxes: 0, l2Boxes: 0 }
-  // 场景切换的近似：subs 阶段还拿不到 TransNet 的镜头边界，
-  // 先用「距上次强制 L2 超过 N 秒」代替，保证长镜头里也能补扫到。
-  const nearCut = (i, t) => cutTimes.some((c) => Math.abs(c - t) < 0.6) ||
-    t - (stats.lastForceT ?? -99) >= forceEverySec
-  const regions = []
-  let nextId = 1
-  // 判「这个框属于字幕」不能要求完全落在带内 —— 字幕框常比带高一点（描边/阴影），
-  // 用「与带的重叠面积占自身一半以上」更稳。
-  const overlapRatio = (b, s) => {
-    const x0 = Math.max(b.x0, s.x0), x1 = Math.min(b.x1, s.x1)
-    const y0 = Math.max(b.y0, s.y0), y1 = Math.min(b.y1, s.y1)
-    if (x1 <= x0 || y1 <= y0) return 0
-    const inter = (x1 - x0) * (y1 - y0)
-    const area = Math.max(1, (b.x1 - b.x0) * (b.y1 - b.y0))
-    return inter / area
-  }
-  // 两个判据取或：中心点落在带内（字幕框常比带高，靠重叠率会漏），
-  // 或与带的重叠占自身 30% 以上（跨行字幕）。
-  const inBand = (b) => {
-    const cx = (b.x0 + b.x1) / 2
-    const cy = (b.y0 + b.y1) / 2
-    return subtitleBands.some((s) => {
-      const inside = cx >= s.x0 - 12 && cx <= s.x1 + 12 && cy >= s.y0 - 12 && cy <= s.y1 + 12
-      return inside || overlapRatio(b, s) > 0.3
-    })
-  }
-  console.log(`  [subs] 区域追踪入参：字幕带 ${subtitleBands.length} 条 ${JSON.stringify(subtitleBands.map(b=>[b.x0,b.y0,b.x1,b.y1]))}`)
-
-  // ── 第一遍：逐帧粗扫 + 聚类 + 匹配 ──
-  for (let i = 0; i < paths.length; i++) {
-    const t = times[i]
-    let boxes
-    try {
-      // L1：每帧快速扫，只够发现大字
-      boxes = await detect(paths[i], null, l1Side)
-      stats.l1++
-      stats.l1Boxes += boxes.length
-      // L1 无候选 / 候选过少 / 场景切换 → 强制 L2 补扫
-      // L1 与 L2 同分辨率时不做补扫 —— 那是重复扫同一张图
-      const needL2 = l1Side !== l2Side && (boxes.length === 0 || nearCut(i, t))
-      if (needL2) {
-        if (needL2) stats.lastForceT = t
-        const l2 = await detect(paths[i], null, l2Side)
-        stats.l2++
-        stats.l2Boxes += l2.length
-        if (l2.length > boxes.length) boxes = l2
-      }
-    } catch { continue }
-    const nonSub = boxes.filter((b) => !inBand(b))
-    if (i === 0) console.log(`  [subs] 首帧粗扫 ${boxes.length} 框，字幕带内 ${boxes.length - nonSub.length} 个被排除`)
-    if (!nonSub.length) continue
-    const clusters = clusterBoxes(nonSub, FW, FH)
-    if (!clusters.length) continue
-    // regions 的元素是 {regionId, bbox, ...}，matchRegions 要的是扁平 bbox
-    const { pairs, unmatchedBoxes } = matchRegions(regions.map((r) => r.bbox), clusters)
-    for (const [ri, ci] of pairs) {
-      const r = regions[ri]
-      r.lastSeen = t
-      r.bbox = clusters[ci]
-      r.pendingFile = paths[i]
-      r.matchCount = (r.matchCount || 1) + 1
-    }
-    for (const ci of unmatchedBoxes) {
-      regions.push({
-        regionId: 'r' + String(nextId++).padStart(3, '0'),
-        bbox: clusters[ci],
-        firstSeen: t,
-        lastSeen: t,
-        textHistory: [],
-        state: 'NEW',
-        pendingFile: paths[i],
-        lastRecAt: -99,
-        matchCount: 1,
-      })
-    }
-  }
-
-  // ── 第二遍：多时间点采样细认 ──
-  // 单点识别有两个毛病：① 只采 lastSeen 一帧，内容可能早变了；
-  // ② 位置一直有东西（游戏 UI、画面中央的连续变化物）会被误判成「文字区域」。
-  // 所以每个区域在存活区间里采 3 个点，全读不出就判 GONE，不再续命。
-  const fileAt = (t) => {
-    let lo = 0, hi = times.length - 1
-    while (lo < hi) { const mid = (lo + hi) >> 1; if (times[mid] < t) lo = mid + 1; else hi = mid }
-    return { file: paths[lo], t: times[lo] }
-  }
-  for (const r of regions) {
-    const span = r.lastSeen - r.firstSeen
-    const sampleT = span >= 2
-      ? [r.firstSeen, r.firstSeen + span / 2, r.lastSeen]
-      : [r.lastSeen]
-    let gotAny = false
-    for (const t of sampleT) {
-      const { file } = fileAt(t)
-      try {
-        // 先按水平投影切行 —— 多行气泡直接整块喂 rec 只会读出一行
-        const lines = await splitLines(file, r.bbox)
-        const parts = []
-        for (const lb of lines) {
-          const pb = padBox(lb)
-          const { text, conf } = await recognizeCrop(file, pb)
-          const clean = (text || '').trim()
-          if (clean.length >= 2 && conf >= 0.45) parts.push(clean)
-        }
-        const joined = parts.join(' ')
-        if (joined.length >= 2) {
-          r.textHistory = pushTextHistory(r.textHistory, joined)
-          gotAny = true
-          if (lines.length > 1) r.lineCount = Math.max(r.lineCount || 1, lines.length)
-        }
-      } catch { /* 单点失败不影响其它采样点 */ }
-    }
-    if (gotAny) {
-      r.state = 'CHANGED'
-    } else if (r.matchCount >= 5 && span >= 3) {
-      // 位置稳定存在好一会儿、却一个字都读不出：不是文字区域
-      r.state = 'GONE'
-    } else {
-      r.state = 'STABLE'
-    }
-    r.sampleCount = sampleT.length
-    delete r.pendingFile
-    delete r.lastRecAt
-    delete r.matchCount
-  }
-  console.log(`  [subs] 分级扫描：L1 ${stats.l1} 帧（共 ${stats.l1Boxes} 框）` +
-    `，L2 补扫 ${stats.l2} 帧（${(stats.l2 / Math.max(1, stats.l1) * 100).toFixed(0)}%，共 ${stats.l2Boxes} 框）`)
-  // GONE 的区域不进最终输出（它们不是画面文字）
-  return regions.filter((r) => r.state !== 'GONE')
 }
 
 async function detectFramesParallel(paths, concurrency = detWorkerCount(), roi = null) {
@@ -562,78 +410,13 @@ export async function extractSubtitles(video, outDir, opts = {}) {
     } catch { /* skip */ }
   }
 
-  // ── 画面文字（ADR-0017）：区域级追踪 ──
-  // ROI 裁剪后全量 det 只看得到字幕带，画面文字（参数标注 / 图表数字 / 界面文字）
-  // 改走独立通道：低清粗扫 → 排除字幕带 → 聚类 → 跨帧匹配 → 只对 NEW/CHANGED 细认。
-  const SCREEN_TEXT_ON = process.env.SUBS_SCREEN_TEXT !== '0'
-  let screenRegions = []
-  if (SCREEN_TEXT_ON) {
-    try {
-      const times = frames.map((f) => f.t)
-      screenRegions = await trackScreenRegions(allPaths, times, FW, FH, subtitleBands, {
-        // 有大小字分布才分级（L1 320 省成本）；全是小字就直接 480
-        l1Side: tiersEnabled ? 320 : 480,
-        l2Side: 480,
-      })
-      console.log(`  [subs] 画面文字区域 ${screenRegions.length} 个（低清粗扫 + 跨帧追踪）`)
-    } catch (e) {
-      console.log(`  [subs] 画面文字追踪失败：${String((e && e.message) || e)}`)
-    }
-  }
-
-  // 旧路径：按「文字状态变化」触发识别（SUBS_SCREEN_TEXT=0 时保留原行为，便于对照）
+  // ── 画面文字：已移除（2026-11-13 指挥官决策） ──
+  // 理由：漫画/游戏这类「图文一体、给人看」的内容，OCR 只碎字、不知语义，
+  // 产出的错字会被下游当成事实（比没有数据更危险）；而且检测+多行切分很贵。
+  // 画面文字的识别改由 VLM 读网格时一并完成。OCR 只保留字幕这条「印刷体、位置稳定」的线。
   const screenText = []
-  try {
-    let lastKey = null
-    let lastT = -99
-    const keyOf = (boxes) => boxes
-      .map((b) => `${Math.round(b.x0 / 40)},${Math.round(b.y0 / 20)},${Math.round((b.x1 - b.x0) / 40)}`)
-      .sort()
-      .join('|')
-    const screenPool = frames.concat(probeFrameData).sort((a, b) => a.t - b.t)
-    for (const fr of screenPool) {
-      if (!fr.others || !fr.others.length) { lastKey = null; continue }
-      const key = keyOf(fr.others)
-      // 状态变了才识别；同一状态最多再隔 6 秒复核一次（防检测抖动导致长时间不读）
-      if (key === lastKey && fr.t - lastT < 6) continue
-      const box = fr.others.slice().sort((a, b) => (b.x1 - b.x0) * (b.y1 - b.y0) - (a.x1 - a.x0) * (a.y1 - a.y0))[0]
-      if (!box) continue
-      lastKey = key
-      lastT = fr.t
-      try {
-        const { text, conf } = await recognizeCrop(fr.file, padBox(box))
-        const clean = text.trim()
-        if (clean.length >= 2 && conf >= 0.45) {
-          // 与上一条相同就并进它，不重复输出
-          // ② 文本去重：同一句（含 OCR 抖动变体）只记一次
-          const dupIdx = screenText.findIndex((x) => {
-            if (x.text === clean) return true
-            const a = x.text, b = clean
-            const dist = levenshtein(a, b)
-            return dist / Math.max(a.length, b.length, 1) < 0.2
-          })
-          if (dupIdx >= 0) { screenText[dupIdx].end = Number(fr.t.toFixed(2)); continue }
-          screenText.push({ t: Number(fr.t.toFixed(2)), end: Number(fr.t.toFixed(2)), text: clean, conf: Number(conf.toFixed(2)) })
-        }
-      } catch { /* skip */ }
-    }
-    console.log(`  [subs] 画面文字 ${screenText.length} 条（按文字状态变化触发，非固定间隔）`)
-  } catch { /* 附加信息，失败不影响字幕 */ }
+  const screenRegions = []
 
-  const merged = []
-  for (const r of results) {
-    const last = merged[merged.length - 1]
-    if (last) {
-      const sim = 1 - levenshtein(last.text, r.text) / Math.max(last.text.length, r.text.length, 1)
-      const contains = last.text.includes(r.text) || r.text.includes(last.text)
-      if ((contains || sim >= 0.7) && r.start - last.end < 1.0) {
-        if (r.text.length > last.text.length) last.text = r.text
-        last.end = r.end
-        continue
-      }
-    }
-    merged.push({ ...r })
-  }
   // 挂上实际并发度与温度判定，供 index.json / 面板「最近运行」展示
   try {
     merged.detWorkers = detWorkers
