@@ -239,8 +239,6 @@ export async function extractSubtitles(video, outDir, opts = {}) {
   const PROBE_N = Number(process.env.SUBS_PROBE_N ?? 16)
   let candidateWindows = []   // [{ from, to }] 秒
   let subtitleBands = []      // 探测帧聚出的稳定字幕带（全帧检测的 ROI 来源）
-  let probeFrameData = []     // 探测帧（全帧 det）的画面文字候选，补 ROI 裁剪后的缺口
-  let tiersEnabled = false    // 由探测帧的文字尺寸分布决定是否启用 L1/L2 分级
   let budgetExhausted = false
   let coverage = { probed: 0, denseFrames: 0 }
 
@@ -255,42 +253,11 @@ export async function extractSubtitles(video, outDir, opts = {}) {
       const line = selectSubtitleLine(probeBoxes[k] || [], FW, FH)
       if (line) hits.push({ t: probeIdx[k] / FPS, box: line })
     }
-    console.log(`  [subs] 稀疏探测 ${PROBE_N} 帧，候选 ${hits.length}`)
+    console.log(`  [subs] 稀疏探测 ${PROBE_N} 帧，只找字幕候选：${hits.length} 个` + (hits.length ? '' : '（无候选 → 跳过全量 OCR）'))
     if (hits.length === 0) {
       console.log('  [subs] 全程没有字幕候选，跳过全量 OCR（画面文字未扫描，不等于全片无文字）')
       return []
     }
-    // ①.5 画面文字候选：ROI 裁剪后全量 det 只看得到字幕带，
-    // 画面里的招牌 / 界面 / 气泡文字要靠这批全帧探测帧补齐。
-    for (let k = 0; k < probeIdx.length; k++) {
-      const boxes = probeBoxes[k] || []
-      if (!boxes.length) continue
-      const m = selectSubtitleLine(boxes, FW, FH)
-      const ot = boxes.filter((b) => {
-        if (m && Math.abs(b.x0 - m.x0) < 10 && Math.abs(b.y0 - m.y0) < 10) return false
-        const w = b.x1 - b.x0, h = b.y1 - b.y0
-        return w > FW * 0.04 && h > FH * 0.015 && h < FH * 0.35
-      })
-      if (ot.length) {
-        probeFrameData.push({ t: probeIdx[k] / FPS, file: join(frameDir, files[probeIdx[k]]), others: ot })
-      }
-    }
-    if (probeFrameData.length) {
-      console.log(`  [subs] 探测帧画面文字候选 ${probeFrameData.length} 帧`)
-    }
-
-    // ── 内容自适应：这个视频有没有「大字」？
-    // 分级扫描（L1 320 抓大字 + L2 480 补小字）只在文字尺寸有分布时才有收益。
-    // 游戏录屏这类全是 UI 小字的视频，L1 什么都检不出，分级等于白付一倍成本。
-    const probeHeights = []
-    for (const boxes of probeBoxes) for (const b of boxes) probeHeights.push(b.y1 - b.y0)
-    const bigTh = FH * 0.035          // 帧空间里约 60px（换算到 640 高的视频约 22px）
-    const bigCount = probeHeights.filter((h) => h > bigTh).length
-    const bigTextRatio = probeHeights.length ? bigCount / probeHeights.length : 0
-    tiersEnabled = bigTextRatio >= 0.25
-    console.log(`  [subs] 文字尺寸分布：${probeHeights.length} 个框，大字（>${Math.round(bigTh)}px）${bigCount} 个` +
-      `（${(bigTextRatio * 100).toFixed(0)}%）→ ${tiersEnabled ? '启用 L1/L2 分级' : '单级 480（无大字，分级无收益）'}`)
-
     // ② 区域投票：把命中框按位置聚类，反复出现在同一位置的才是「字幕带」
     //    簇中心按 (x0/40, y0/20) 粗粒度量化，命中 >= 30% 的探测帧才算稳定带
     const bandVotes = new Map()
