@@ -33,6 +33,7 @@ const FILES = [
   'lib/cpu.mjs',
   'lib/dedup.mjs',
   'lib/frame-dedup.mjs',
+  'lib/subtitle-diff.mjs',
   'tools/calibrate.mjs',
 ]
 

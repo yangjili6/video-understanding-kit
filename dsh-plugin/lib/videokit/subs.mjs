@@ -10,6 +10,7 @@ import { mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { detect, recognizeCrop, splitLines } from './lib/ocr-pp.mjs'
+import { extractBandFrames, detectBandChanges } from './lib/subtitle-diff.mjs'
 
 const run = (c, a, o = {}) => execFileSync(c, a, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], ...o })
 
@@ -198,7 +199,7 @@ function bandToRoi(bands, FW, FH) {
 
 async function detectFramesParallel(paths, concurrency = detWorkerCount(), roi = null) {
   if (paths.length === 0) return []
-  if (paths.length <= concurrency * 2) {
+  if (paths.length <= Math.max(concurrency * 2, 40)) {
     // 帧太少，开 worker 反而亏（每个 worker 要加载一次模型）
     const out = []
     for (const p of paths) { try { out.push(await detect(p, roi)) } catch { out.push([]) } }
@@ -354,16 +355,50 @@ export async function extractSubtitles(video, outDir, opts = {}) {
   // 字幕带已知时只检测带内区域：det 输入从 960×540 降到 960×80 量级，
   // 推理与后处理都按面积降一个量级。画面文字（others）由稀疏探测帧单独覆盖。
   const ocrRoi = bandToRoi(subtitleBands, FW, FH)
+
+  // ── 字幕带差分：只对「字幕真的变了」的帧跑 det ──
+  // 全量 det 是 OCR 的大头（217 帧 × 0.65s ≈ 140s），但字幕大部分时间不变。
+  // 用字幕那一小条的像素差分筛出变化帧，能把 det 的输入降一个量级。
+  // 没有稳定字幕带时（条漫/多位置字幕）跳过这层，保持原行为。
+  let detSourceFiles = allPaths
+  let detSourceTimes = null
+  if (ocrRoi) {
+    try {
+      const bf = extractBandFrames(video, ocrRoi, FW, FPS)
+      const dc = detectBandChanges(bf.frames, FPS, { th: 1.0, minGapSec: 0.3 })
+      // changes 的下标就是帧序号（diff 的 fps 与 pipeline 的 FPS 一致）
+      const keepIdx = new Set(dc.changes)
+      // 首帧一定要检（否则第一句字幕会丢）
+      keepIdx.add(0)
+      const picked = []
+      for (let i = 0; i < allPaths.length; i++) {
+        if (keepIdx.has(i)) picked.push({ file: allPaths[i], t: denseFiles[i] ? files.indexOf(denseFiles[i]) / FPS : 0, idx: i })
+      }
+      if (picked.length && picked.length < allPaths.length * 0.9) {
+        detSourceFiles = picked.map((x) => x.file)
+        detSourceTimes = picked.map((x) => x.t)
+        console.log(`  [subs] 字幕带差分：${allPaths.length} 帧中 ${picked.length} 帧字幕有变化` +
+          `（${(picked.length / allPaths.length * 100).toFixed(1)}%），只对这些跑 det`)
+        console.log(`  [subs] 变化时刻：${picked.map((x) => x.t.toFixed(1)).join(', ')}`)
+      } else {
+        console.log(`  [subs] 字幕带差分判出 ${dc.changes.length} 个变化点，但占比过高，退回全量检测`)
+      }
+    } catch (e) {
+      console.log(`  [subs] 字幕带差分失败，退回全量检测：${(e && e.message) || e}`)
+    }
+  }
   if (ocrRoi) {
     console.log(`  [subs] ROI 裁剪：只检测字幕带 x=${ocrRoi.x} y=${ocrRoi.y} ${ocrRoi.w}×${ocrRoi.h}（占全帧 ${((ocrRoi.w * ocrRoi.h) / (FW * FH) * 100).toFixed(1)}%）`)
   }
-  const allBoxes = await detectFramesParallel(allPaths, detWorkers, ocrRoi)
+  const allBoxes = await detectFramesParallel(detSourceFiles, detWorkers, ocrRoi)
   stageMark('全量检测')
   const statDetMs = Date.now() - _td0
   const frames = []
   // denseFiles 是 files 的子集，时间要按原始序号还原
-  const denseTimes = denseFiles.map((f) => files.indexOf(f) / FPS)
-  for (let i = 0; i < denseFiles.length; i++) {
+  // frames 必须按「实际送了 det 的帧」构造 —— 字幕带差分开启时它只含变化帧，
+  // 用 denseFiles 遍历会让 allBoxes 的下标错位。
+  const detTimes = detSourceTimes || denseFiles.map((f) => files.indexOf(f) / FPS)
+  for (let i = 0; i < detSourceFiles.length; i++) {
     const boxes = allBoxes[i] || []
     const main = selectSubtitleLine(boxes, FW, FH)
     // 其他文字框：不在字幕位置的那些（气泡、招牌、界面）
@@ -372,9 +407,9 @@ export async function extractSubtitles(video, outDir, opts = {}) {
       const w = b.x1 - b.x0, h = b.y1 - b.y0
       return w > FW * 0.04 && h > FH * 0.015 && h < FH * 0.35
     })
-    frames.push({ t: denseTimes[i], file: allPaths[i], main, others })
+    frames.push({ t: detTimes[i] ?? 0, file: detSourceFiles[i], main, others })
   }
-  console.log(`  det ${denseFiles.length} 帧（并行 ${detWorkers} 路，帧空间 ${FW}×${FH}）`)
+  console.log(`  det ${detSourceFiles.length} 帧（并行 ${detWorkers} 路，帧空间 ${FW}×${FH}）`)
   console.log(`  [subs] OCR 预算 ${OCR_BUDGET_MS}ms，实际 ${Date.now() - tOcrStart}ms${budgetLeft() < 0 ? '（预算耗尽：未完成全片密集扫描，未覆盖区间未扫描）' : ''}`)
   console.log(`  [timing] det ${(statDetMs / 1000).toFixed(2)}s | rec ${(statRecMs.v / 1000).toFixed(2)}s`)
 
@@ -416,6 +451,22 @@ export async function extractSubtitles(video, outDir, opts = {}) {
   // 画面文字的识别改由 VLM 读网格时一并完成。OCR 只保留字幕这条「印刷体、位置稳定」的线。
   const screenText = []
   const screenRegions = []
+
+  // 字幕合并：相邻且文本相似的合并成一条（OCR 对同一句会抖出变体）
+  const merged = []
+  for (const r of results) {
+    const last = merged[merged.length - 1]
+    if (last) {
+      const sim = 1 - levenshtein(last.text, r.text) / Math.max(last.text.length, r.text.length, 1)
+      const contains = last.text.includes(r.text) || r.text.includes(last.text)
+      if ((contains || sim >= 0.7) && r.start - last.end < 1.0) {
+        if (r.text.length > last.text.length) last.text = r.text
+        last.end = r.end
+        continue
+      }
+    }
+    merged.push({ ...r })
+  }
 
   // 挂上实际并发度与温度判定，供 index.json / 面板「最近运行」展示
   try {
