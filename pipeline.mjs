@@ -1161,7 +1161,10 @@ async function main() {
       console.log(`[5c] 帧级去重：${fd.stats.total} → ${fd.stats.kept} 帧（去 ${fd.stats.dropped}，` +
         `${(fd.stats.ratio * 100).toFixed(1)}%；运动门控 ${fd.stats.motionSkipped}，pHash ${fd.stats.hashSkipped}）`)
     } catch (e) {
+      // 必须打全栈 —— 之前只打 message，变量遮蔽类错误（ReferenceError: x is not defined）
+      // 看着像「功能没生效」，实际是代码 bug
       console.log('[5c] 帧级去重失败，按原样继续：' + String((e && e.message) || e))
+      console.log('[5c] 错误堆栈：' + String((e && e.stack) || '(无堆栈)').split('\n').slice(0, 5).join(' | '))
     }
   }
   const tGroupStart = Date.now()
