@@ -23,17 +23,14 @@ const DST_DIR = join(ROOT, 'dsh-plugin', 'lib', 'videokit')
 
 const FILES = [
   'pipeline.mjs',
-  'subs.mjs',
   'asr.mjs',
   'download-models.mjs',
-  'lib/ocr-pp.mjs',
   'lib/transnet-lib.mjs',
   'lib/transnet-worker.mjs',
-  'lib/ocr-det-worker.mjs',
   'lib/cpu.mjs',
   'lib/dedup.mjs',
   'lib/frame-dedup.mjs',
-  'lib/subtitle-diff.mjs',
+  'lib/band-probe.mjs',
   'lib/band-strip.mjs',
   'lib/library.mjs',
   'tools/calibrate.mjs',

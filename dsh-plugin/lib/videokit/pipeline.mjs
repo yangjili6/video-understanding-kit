@@ -23,7 +23,6 @@ import { transcribeVideo } from './asr.mjs'
 import { detectCuts } from './lib/transnet-lib.mjs'
 import { dedupPages, setDedupTmp } from './lib/dedup.mjs'
 import { dedupFrames } from './lib/frame-dedup.mjs'
-import { extractSubtitles, dumpStageTiming, resetStageTiming } from './subs.mjs'
 
 // ---------------------------------------------------------------- 参数
 
@@ -673,7 +672,7 @@ const HIST_TH = 0.2 // 直方图差异内容边界阈值
 const CONSISTENCY_TH = 0.06 // 组内首尾帧 RMSE 阈值（超出则拆组）
 const DP_L = Number(args['dp-l'] || 10)
 const SERIAL = !!args.serial // 强制串行（对照用；默认 worker 并行）
-const SUBS = !!args.subs // 字幕提取（PP-OCR，慢，显式开启） // DP 分段最短段长（帧，5fps 下 20 = 4s）
+const SUBS = !!args.subs // 软字幕轨提取（内嵌 SRT；OCR 已删除，见 ADR-0019） // DP 分段最短段长（帧，5fps 下 20 = 4s）
 const MAX_GROUP_FRAMES = Infinity // 内容组展示帧无上限（每组完整表达）
 
 function frameRMSE(a, b) {
@@ -1070,55 +1069,9 @@ async function main() {
       }
     }
   }
-  // ADR-0016：OCR 与「补帧 + 分组分页」互不依赖（OCR 读的是视频本身，不读 cuts/pages），
-  // 所以这里不 await，先发出去让它和后面两段重叠；到构造 index 之前再收。
-  // 实测重叠无收益（2026-11-10 对照实验：重叠 118s vs 串行 117.5s，OCR 反而慢 9s），
-  // 默认走串行；DSH_SUBS_OVERLAP=1 可开启重叠，代码保留作对照入口。
-  const OVERLAP = process.env.DSH_SUBS_OVERLAP === '1'
-  let subsJob = null
-  let tSubStart = 0
-  if (SUBS && !softSubs) {
-    console.log(
-      !OVERLAP
-        ? '[subs] 跑字幕提取（PP-OCR 硬字幕链路，串行：等它跑完再分组）...'
-        : '[subs] 跑字幕提取（PP-OCR 硬字幕链路，与 TransNet/分组分页重叠）...',
-    )
-    tSubStart = Date.now()
-    resetStageTiming()
-    subsJob = (async () => {
-      const r = await extractSubtitles(VIDEO, join(OUT, 'subs'), { fps: 2 })
-      subsStatus = 'completed'
-      return r
-    })()
-  } else {
-    lap('字幕提取')
-  }
-
-  /** 收 OCR 结果并按真实区间记时（并行段不能按 lap 顺序累加） */
-  const harvestSubs = async () => {
-    // 已经收过（串行模式下提前收过一次）就直接把结果还回去，
-    // 否则下游拿不到挂在 subs 上的 subtitleBands / detWorkers 等元信息
-    if (!subsJob) return subs
-    subs = await subsJob
-    subsJob = null
-    const tSubEnd = Date.now()
-    // 分阶段 wall + 进程级 CPU（覆盖 worker 线程）。
-    // 注意：重叠模式下这些 stage 的 wall 里混着分组分页的时间，par 会虚高，只作参考。
-    for (const m of dumpStageTiming()) {
-      console.log(`  [stage] ${m.stage}: wall ${m.wallMs}ms | cpu ${m.cpuMs}ms | par ${m.par}`)
-    }
-    console.log(
-      `[subs] 完成 ${((tSubEnd - tSubStart) / 1000).toFixed(1)}s，字幕 ${subs.length} 条（status=completed${OVERLAP ? '，与分组分页重叠' : ''}）`,
-    )
-    timings['字幕提取'] = Number(((tSubEnd - tSubStart) / 1000).toFixed(2))
-    tPrev = tSubEnd
-    console.log(`[timing] 字幕提取: ${((tSubEnd - tSubStart) / 1000).toFixed(1)}s`)
-    for (const sm of subs.slice(0, 10)) console.log(`  ${sm.start.toFixed(1)}~${sm.end.toFixed(1)}s conf=${sm.conf.toFixed(2)} | ${sm.text}`)
-    return subs
-  }
-
-  // 串行（默认）：立刻收，后面的分组分页等它跑完再开始
-  if (!OVERLAP) await harvestSubs()
+  // OCR 已删除（ADR-0019）：硬字幕改由 VLM 读网格 + 字幕条带，落成文本后入阅读库。
+  // 软字幕轨（内嵌 SRT）仍在此前提取，那条路不依赖 OCR。
+  lap('字幕提取')
 
   // 取 TransNet 结果（此时 worker 多半已经跑完，这段墙钟接近 0）
   const tWait = Date.now()
@@ -1206,10 +1159,10 @@ async function main() {
   const tGroupEnd = Date.now()
   timings['分组+分页'] = Number(((tGroupEnd - tGroupStart) / 1000).toFixed(2))
   tPrev = tGroupEnd
-  console.log(`[timing] 分组+分页: ${((tGroupEnd - tGroupStart) / 1000).toFixed(1)}s${!OVERLAP ? '' : '（与 OCR 重叠）'}`)
+  console.log(`[timing] 分组+分页: ${((tGroupEnd - tGroupStart) / 1000).toFixed(1)}s`)
 
   // 收 OCR：重叠模式下到这里分组分页已经跑完；串行模式下早已收过，这里是空操作
-  const subsResult = await harvestSubs()
+  const subsResult = subs
 
   // 字幕条带：把该页时间段的字幕切条去重后贴到网格页底部（指挥官 2026-11-14 方案）
   // 依赖 OCR 探测出的字幕带位置；没有稳定字幕带时只写 pages.json，不拼图。
@@ -1349,10 +1302,10 @@ const index = {
       leftGroupId: b.leftGroupId, rightGroupId: b.rightGroupId,
       lastLeftFrame: b.lastLeftFrame, firstRightFrame: b.firstRightFrame,
     })),
-    // 实际并发度与温度判定（供面板「最近运行」展示；subs 为数组，属性由 extractSubtitles 挂上）
-    detWorkers: Number.isFinite(Number(subs.detWorkers)) ? Number(subs.detWorkers) : null,
-    loadLevel: subs.loadLevel ?? null,
-    tempC: Number.isFinite(Number(subs.tempC)) ? Number(subs.tempC) : null,
+    // 温度与负载（供面板「最近运行」展示；OCR 已删除，这些值现在只反映本次启动时的判定）
+    detWorkers: null,
+    loadLevel: detectedLoad?.level ?? null,
+    tempC: Number.isFinite(Number(detectedLoad?.tempC)) ? Number(detectedLoad.tempC) : null,
     frameDedup: frameDedupResult ? frameDedupResult.stats : null,
     dedup: dedupResult ? {
       globalSim: 6, roiChange: 10,
