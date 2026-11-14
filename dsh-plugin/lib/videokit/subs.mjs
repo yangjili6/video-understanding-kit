@@ -449,6 +449,12 @@ export async function extractSubtitles(video, outDir, opts = {}) {
     merged.tempC = loadAtDecision.tempC ?? null
     merged.screenText = screenText
     merged.screenRegions = screenRegions
+    // 字幕带位置（帧空间坐标）：下游拼「网格 + 字幕条」要用，不能只留在日志里
+    merged.subtitleBands = subtitleBands.map((b) => ({
+      x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, votes: b.votes ?? null,
+    }))
+    merged.frameW = FW
+    merged.frameH = FH
   } catch { /* 展示信息，失败不影响主流程 */ }
   return merged
 }

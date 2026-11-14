@@ -13,6 +13,7 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync, lstatSync } from 'node:fs'
 import { detectCpuTopology, ioConcurrency, detectLoad } from './lib/cpu.mjs'
+import { buildBandStrips } from './lib/band-strip.mjs'
 import { Worker } from 'node:worker_threads'
 import { join, dirname } from 'node:path'
 import { transcribeVideo } from './asr.mjs'
@@ -1092,7 +1093,9 @@ async function main() {
 
   /** 收 OCR 结果并按真实区间记时（并行段不能按 lap 顺序累加） */
   const harvestSubs = async () => {
-    if (!subsJob) return
+    // 已经收过（串行模式下提前收过一次）就直接把结果还回去，
+    // 否则下游拿不到挂在 subs 上的 subtitleBands / detWorkers 等元信息
+    if (!subsJob) return subs
     subs = await subsJob
     subsJob = null
     const tSubEnd = Date.now()
@@ -1108,6 +1111,7 @@ async function main() {
     tPrev = tSubEnd
     console.log(`[timing] 字幕提取: ${((tSubEnd - tSubStart) / 1000).toFixed(1)}s`)
     for (const sm of subs.slice(0, 10)) console.log(`  ${sm.start.toFixed(1)}~${sm.end.toFixed(1)}s conf=${sm.conf.toFixed(2)} | ${sm.text}`)
+    return subs
   }
 
   // 串行（默认）：立刻收，后面的分组分页等它跑完再开始
@@ -1202,7 +1206,21 @@ async function main() {
   console.log(`[timing] 分组+分页: ${((tGroupEnd - tGroupStart) / 1000).toFixed(1)}s${!OVERLAP ? '' : '（与 OCR 重叠）'}`)
 
   // 收 OCR：重叠模式下到这里分组分页已经跑完；串行模式下早已收过，这里是空操作
-  await harvestSubs()
+  const subsResult = await harvestSubs()
+
+  // 字幕条带：把该页时间段的字幕切条去重后贴到网格页底部（指挥官 2026-11-14 方案）
+  // 依赖 OCR 探测出的字幕带位置；没有稳定字幕带时只写 pages.json，不拼图。
+  let bandStats = null
+  try {
+    const bands = subsResult?.subtitleBands || []
+    bandStats = buildBandStrips({
+      video: VIDEO, outDir: OUT, groups, subtitleBands: bands, FW: 960,
+    })
+    console.log(`[6b] 字幕条带：${bandStats.withBand}/${bandStats.pages} 页有字幕条（共 ${bandStats.bandItems} 条，已去重）`)
+    if (!bands.length) console.log('     （无稳定字幕带，跳过拼条带）')
+  } catch (e) {
+    console.log(`[6b] 字幕条带生成失败（不影响主流程）：${String(e?.message || e).slice(0, 160)}`)
+  }
 
   lap('字幕/其他')
   const problems = runChecks(displaySet, groups, pages)

@@ -34,6 +34,8 @@ const FILES = [
   'lib/dedup.mjs',
   'lib/frame-dedup.mjs',
   'lib/subtitle-diff.mjs',
+  'lib/band-strip.mjs',
+  'lib/library.mjs',
   'tools/calibrate.mjs',
 ]
 
