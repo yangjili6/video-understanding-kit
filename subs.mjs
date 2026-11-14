@@ -329,7 +329,11 @@ export async function extractSubtitles(video, outDir, opts = {}) {
   if (ocrRoi) {
     try {
       const bf = extractBandFrames(video, ocrRoi, FW, FPS)
-      const dc = detectBandChanges(bf.frames, FPS, { th: 1.0, minGapSec: 0.3 })
+      // 阈值实测：1.0 太敏感（大和号 42s 里同一句字幕重复 5-7 帧、肉眼完全一样，
+      // 差分却有 1.9-9.5，全是 JPEG 压缩噪声 + 抗锯齿 + GOP 抖动）；
+      // 三档对比 1.0/5.0/10.0 → 变化点 81/63/43，字幕都是 14 条且内容一致，
+      // 所以取 10.0（det 帧数减半，字幕无损失）。
+      const dc = detectBandChanges(bf.frames, FPS, { th: Number(process.env.SUBS_BAND_TH || 10.0), minGapSec: 0.3 })
       // changes 的下标就是帧序号（diff 的 fps 与 pipeline 的 FPS 一致）
       const keepIdx = new Set(dc.changes)
       // 首帧一定要检（否则第一句字幕会丢）
@@ -371,7 +375,10 @@ export async function extractSubtitles(video, outDir, opts = {}) {
       const w = b.x1 - b.x0, h = b.y1 - b.y0
       return w > FW * 0.04 && h > FH * 0.015 && h < FH * 0.35
     })
-    frames.push({ t: detTimes[i] ?? 0, file: detSourceFiles[i], main, others })
+    // endT = 下一次字幕变化的时刻（差分筛帧时帧变稀，只靠 fr.t 会把字幕区间截短；
+    // 「上一次变化到下一次变化之间字幕没变」是差分法的基本假设，用它延伸 end 是对的）
+    const nextT = detTimes[i + 1] ?? (files.length / FPS)
+    frames.push({ t: detTimes[i] ?? 0, endT: nextT, file: detSourceFiles[i], main, others })
   }
   console.log(`  det ${detSourceFiles.length} 帧（并行 ${detWorkers} 路，帧空间 ${FW}×${FH}）`)
   console.log(`  [subs] OCR 预算 ${OCR_BUDGET_MS}ms，实际 ${Date.now() - tOcrStart}ms${budgetLeft() < 0 ? '（预算耗尽：未完成全片密集扫描，未覆盖区间未扫描）' : ''}`)
@@ -385,10 +392,10 @@ export async function extractSubtitles(video, outDir, opts = {}) {
       Math.abs(cur.main.y0 - fr.main.y0) < 20 &&
       (fr.main.x1 - fr.main.x0) >= (cur.main.x1 - cur.main.x0) - 150
     if (same) {
-      cur.end = fr.t
+      cur.end = fr.endT ?? fr.t
       cur.frames.push(fr)
     } else {
-      events.push({ start: fr.t, end: fr.t, main: fr.main, frames: [fr] })
+      events.push({ start: fr.t, end: fr.endT ?? fr.t, main: fr.main, frames: [fr] })
     }
   }
 
