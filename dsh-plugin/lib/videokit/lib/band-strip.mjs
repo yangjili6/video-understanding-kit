@@ -17,19 +17,9 @@ import { probeSubtitleBand } from './band-probe.mjs'
 
 const FPS = 2                // 字幕带抽帧率
 const MAX_ITEMS_PER_ROW = 6  // 一条大条最多 6 个字幕条，超过换行
-const PHASH_T = 12
-const SSIM_T = 0.82        // 保留给别处（条带整体比较用）
 const GLYPH_T = 0.85       // 字形 IoU：同一句字幕 ≥ 0.85
 
-const COS = (() => {
-  const N = 32
-  return Array.from({ length: N }, (_, i) => Array.from({ length: N }, (_, j) => Math.cos(((2 * i + 1) * j * Math.PI) / (2 * N))))
-})()
 
-function grayOf(file, size) {
-  const buf = execFileSync('magick', [file, '-colorspace', 'Gray', '-resize', `${size}x${size}!`, '-depth', '8', 'gray:-'], { maxBuffer: 32 * 1024 * 1024 })
-  return { px: new Uint8Array(buf.subarray(0, size * size)), W: size, H: size }
-}
 
 /** 按宽度等比缩放的灰度读取（条带是长条形，不能压成正方形） */
 function grayWide(file, width) {
@@ -40,34 +30,8 @@ function grayWide(file, width) {
   return { px: new Uint8Array(buf.subarray(0, width * h)), W: width, H: h }
 }
 
-function phash(g) {
-  const dct = []
-  for (let u = 0; u < 8; u++) for (let v = 0; v < 8; v++) {
-    let s = 0
-    for (let x = 0; x < 32; x++) for (let y = 0; y < 32; y++) s += g.px[y * 32 + x] * COS[x][u] * COS[y][v]
-    dct.push(s)
-  }
-  const mean = dct.slice(1).reduce((a, b) => a + b, 0) / 63
-  return dct.map((v) => (v > mean ? 1 : 0))
-}
 
-const ham = (a, b) => a.reduce((n, v, i) => n + (v !== b[i] ? 1 : 0), 0)
 
-function ssim(a, b, win = 8) {
-  const C1 = 6.5025, C2 = 58.5225
-  let total = 0, n = 0
-  for (let y = 0; y + win <= a.H; y += win) for (let x = 0; x + win <= a.W; x += win) {
-    let sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0
-    for (let j = 0; j < win; j++) for (let i = 0; i < win; i++) {
-      const va = a.px[(y + j) * a.W + x + i], vb = b.px[(y + j) * b.W + x + i]
-      sa += va; sb += vb; saa += va * va; sbb += vb * vb; sab += va * vb
-    }
-    const N = win * win, ma = sa / N, mb = sb / N
-    const va2 = saa / N - ma * ma, vb2 = sbb / N - mb * mb, cov = sab / N - ma * mb
-    total += ((2 * ma * mb + C1) * (2 * cov + C2)) / ((ma * ma + mb * mb + C1) * (va2 + vb2 + C2)); n++
-  }
-  return n ? total / n : 1
-}
 
 /**
  * 字形掩码：只保留「高亮 + 高对比」的像素，也就是字幕的白字笔画。
@@ -77,9 +41,15 @@ function ssim(a, b, win = 8) {
  * 而只比白字笔画时，同一句 IoU ≈ 0.95-0.99、不同句 ≈ 0.48-0.52，
  * 两档差一倍，判据非常干净。
  */
-function glyphMask(file, W = 180) {
-  const dim = execFileSync('magick', ['identify', '-format', '%w %h', file], { encoding: 'utf8' }).trim().split(' ')
-  const H = Math.max(2, Math.round(Number(dim[1]) * (W / Number(dim[0]))))
+function glyphMask(file, W = 180, knownH = 0) {
+  let H
+  if (knownH > 0) {
+    // 条带高度在抽帧时就知道，不用再调 identify（每帧省一次进程开销）
+    H = Math.max(2, knownH)
+  } else {
+    const dim = execFileSync('magick', ['identify', '-format', '%w %h', file], { encoding: 'utf8' }).trim().split(' ')
+    H = Math.max(2, Math.round(Number(dim[1]) * (W / Number(dim[0]))))
+  }
   const buf = execFileSync('magick', [file, '-colorspace', 'Gray', '-resize', `${W}x${H}!`, '-depth', '8', 'gray:-'], { maxBuffer: 16 * 1024 * 1024 })
   const px = new Uint8Array(buf.subarray(0, W * H))
   const mask = new Uint8Array(W * H)
@@ -201,7 +171,13 @@ export function buildBandStrips({ video, outDir, groups, subtitleBands, FW }) {
    * 处理一条带（抽帧 → pHash+SSIM 去重 → 6 格/行 → 出图）。
    * 主带与副带走完全相同的流程，所以副带也有去重和时间戳。
    */
-  function stripFor(from, dur, band, tag) {
+  // 弱副带直接取代表帧，不逐帧去重（性能优化 ①）
+  // 判据：sharp 明显低于主带（< 主带 70%）的带，多半是画面纹理/背景文字，
+  // 逐帧去重既慢又没意义——它本来就没什么变化。
+  const mainSharp = allBands.find((b) => b.main)?.sharp ?? 0
+  const WEAK_RATIO = 0.7
+
+  function stripFor(from, dur, band, tag, fast = false) {
     const bh = Math.max(8, band.y1 - band.y0)
     const bh2 = bh - (bh % 2)
     const dir = join(tmp, tag)
@@ -213,11 +189,27 @@ export function buildBandStrips({ video, outDir, groups, subtitleBands, FW }) {
     const files = readdirSync(dir).filter((f) => f.endsWith('.jpg')).sort()
     if (!files.length) return null
     const segs = []
+    // fast 模式：弱副带只取中间那一帧当代表，跳过逐帧去重
+    if (fast) {
+      const mid = Math.floor(files.length / 2)
+      segs.push({
+        idx: mid, endIdx: mid,
+        t: +(from + (mid + 0.5) / FPS).toFixed(2),
+        endT: +(from + (mid + 0.5) / FPS).toFixed(2),
+        file: files[mid], gm: null,
+      })
+      const bh2f = Math.max(8, (band.y1 - band.y0) - ((band.y1 - band.y0) % 2))
+      const rf = join(tmp, `${tag}-fast.jpg`)
+      try {
+        execFileSync('magick', [join(dir, files[mid]), '-background', '#161b22', rf])
+        return { segs, file: rf, band }
+      } catch { return null }
+    }
     for (let i = 0; i < files.length; i++) {
       // 用「白字笔画掩码的 IoU」判同一句，而不是整帧 SSIM：
       // 字幕条背景一直在动，整帧比会把同一句判成不同（实测 0.83）。
       // 实测字形 IoU：同一句 0.95~0.99，不同句 0.48~0.52。
-      const gm = glyphMask(join(dir, files[i]))
+      const gm = glyphMask(join(dir, files[i]), 180, Math.max(2, Math.round(bh2 * (180 / VW))))
       let merged = false
       for (const s2 of segs) {
         if (maskIoU(gm, s2.gm) >= GLYPH_T) {
@@ -260,8 +252,10 @@ export function buildBandStrips({ video, outDir, groups, subtitleBands, FW }) {
       const strips = []
       for (let bi = 0; bi < allBands.length; bi++) {
         const b = allBands[bi]
-        const st = stripFor(from, dur, b, `${p.page}-b${bi}`)
-        if (st) strips.push({ ...st, index: bi, main: !!b.main })
+        // 主带和「够清晰」的副带逐帧去重；弱副带只取代表帧
+        const weak = !b.main && mainSharp > 0 && b.sharp < mainSharp * WEAK_RATIO
+        const st = stripFor(from, dur, b, `${p.page}-b${bi}`, weak)
+        if (st) strips.push({ ...st, index: bi, main: !!b.main, fast: weak })
       }
       if (!strips.length) { manifest.pages.push(metaOf(g, p, null)); continue }
 
