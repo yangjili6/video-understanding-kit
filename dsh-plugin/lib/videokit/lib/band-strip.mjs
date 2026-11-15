@@ -143,7 +143,7 @@ export function buildBandStrips({ video, outDir, groups, subtitleBands, FW }) {
   }
   const bands = bandProbe?.band ? [bandProbe.band] : []
 
-  const manifest = { video: video.split('/').pop(), band: bands.length ? { y: bandY, h: bandH } : null, pages: [] }
+  const manifest = { video: video.split('/').pop(), band: bands.length ? { y: bandY, h: bandH } : null, topBand: topBand ? { y: topBand.y0, h: topBand.y1 - topBand.y0 } : null, pages: [] }
   let withBand = 0, bandItems = 0
   if (!bands.length) {
     // 没有稳定字幕带：只写网格元数据，不拼条带
@@ -226,8 +226,15 @@ export function buildBandStrips({ video, outDir, groups, subtitleBands, FW }) {
         else execFileSync('magick', [...rowFiles, '-background', '#161b22', '-append', bandFile])
         // 顶部标题带（静态）拼到字幕条带上方，让「常驻标题 + 逐帧字幕」在同一条里
         if (topStripFile) {
+          // 顶带原图是视频宽（如 360），直接拼会缩在中间看不清。
+          // 放大到条带宽度的 40%（等比，不拉伸），仍居中对齐。
+          const dim = execFileSync('magick', ['identify', '-format', '%w', bandFile], { encoding: 'utf8' }).trim()
+          const bandW = Number(dim) || VW
+          const topW = Math.max(VW, Math.round(bandW * 0.4))
+          const topScaled = join(tmp, p.page + '-top-scaled.jpg')
+          execFileSync('magick', [topStripFile, '-resize', `${topW}x`, topScaled])
           const merged = join(tmp, p.page + '-with-top.jpg')
-          execFileSync('magick', [topStripFile, bandFile, '-background', '#161b22', '-gravity', 'center', '-append', merged])
+          execFileSync('magick', [topScaled, bandFile, '-background', '#161b22', '-gravity', 'center', '-append', merged])
           execFileSync('cp', [merged, bandFile])
         }
         // 拼到网格页底部
