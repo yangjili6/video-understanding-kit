@@ -1,7 +1,7 @@
 // ⚠ 自动生成文件，请勿编辑。
 // 真源：download-models.mjs（仓库根目录）。改完真源后运行 `pnpm run sync` 重新生成。
 // 校验：`pnpm run sync:check`，副本与真源不一致时退出码为 1。
-// 下载模型（约 47MB）：TransNetV2 + PP-OCRv4 det/rec + 字典
+// 下载模型（约 30MB）：TransNetV2（镜头检测）。OCR 模型已于 ADR-0019 移除。
 // 用法：node download-models.mjs
 import { mkdirSync, createWriteStream, existsSync, statSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -13,10 +13,9 @@ const MODEL_DIR = join(ROOT, 'lib', 'models')
 mkdirSync(MODEL_DIR, { recursive: true })
 
 const FILES = [
+  // ADR-0019 之后只保留 TransNetV2（镜头检测）。OCR 模型已随 OCR 一起删除，
+  // 不要再往这里加 PP-OCR 的模型——已经没有任何代码在用它了。
   { name: 'transnetv2.onnx', url: 'https://huggingface.co/elya5/transnetv2/resolve/main/transnetv2.onnx', size: 31_250_929 },
-  { name: 'ch_PP-OCRv4_det_infer.onnx', url: 'https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx', size: 4_745_517 },
-  { name: 'ch_PP-OCRv4_rec_infer.onnx', url: 'https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_rec_infer.onnx', size: 10_857_958 },
-  { name: 'ppocr_keys_v1.txt', url: 'https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/ppocr_keys_v1.txt', size: 26_250 },
 ]
 
 for (const f of FILES) {
