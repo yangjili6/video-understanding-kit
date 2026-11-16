@@ -48,6 +48,19 @@ const ASR = !!args.asr
 // 基础抽帧率。0 = 自动：按帧预算与时长反推（见 probe 之后），
 // 显式传 --base-fps 才用固定值。固定 5fps 会让页数随时长线性膨胀。
 let BASE_FPS = Number(args['base-fps'] || 0)
+
+/**
+ * 按视频时长给抽帧率。见 use site 的注释：这是"删 OCR 之后靠 VLM 读字幕"
+ * 这个前提下的分档经验表，不是通用最优值。
+ */
+function fpsForDuration(sec) {
+  if (sec <= 10) return 12
+  if (sec <= 20) return 6
+  if (sec <= 30) return 4
+  if (sec <= 40) return 3
+  if (sec <= 60) return 2
+  return 1
+}
 const CHANGE_FPS = Number(args['change-fps'] || 5)
 const DIFF_TH = Number(args['diff-threshold'] || 8)
 const WINDOW = Number(args.window || 2)
@@ -988,16 +1001,19 @@ async function main() {
 
   const { duration, fps, width, height } = probe()
   if (!BASE_FPS) {
-    // 自适应基础帧率：让「抽出来的帧数」≈ 帧预算，而不是让页数随时长膨胀
-    // 下限 1fps（再低抽不到东西），上限 5fps（短视频保持细节）
-    // 样本池要大于预算，否则「采样」退化成「全用」，加权无从发挥。
-    // 预算帧 = 动态页数 × 6；池子取预算的 1.5 倍。
-    const budgetNow = process.env.DSH_FRAME_BUDGET
-      ? FRAME_BUDGET
-      : Math.max(8, Math.min(36, Math.ceil(duration / 6))) * PAGE_FRAMES
-    const poolTarget = budgetNow * 1.5
-    BASE_FPS = Math.min(5, Math.max(1, Math.round((poolTarget / Math.max(1, duration)) * 100) / 100))
-    console.log(`[1/6] 时长 ${duration.toFixed(2)}s，源帧率 ${fps}fps → 自动基础帧率 ${BASE_FPS}fps（目标池子 ${Math.round(BASE_FPS * duration)} 帧）`)
+    // 帧率按时长分档（指挥官 2026-11-16 定的表）：
+    //   0–10s   12fps     短视频给足细节，避免几十帧里漏掉一句字幕
+    //   11–20s   6fps
+    //   20–30s   4fps
+    //   31–40s   3fps
+    //   41–60s   2fps
+    //   1min+    1fps     长视频压住页数，靠 2~3 帧/格仍能读到字幕
+    //
+    // 为什么这么分：删掉 OCR 之后，硬字幕只能靠 VLM 在网格图上读。
+    // 帧太稀 → 同一句字幕可能整段落不进任何一帧；帧太密 → 页数爆炸、token 翻倍。
+    // 分档表本质是「让总帧数随视频长度缓慢增长」，而不是线性膨胀。
+    BASE_FPS = fpsForDuration(duration)
+    console.log(`[1/6] 时长 ${duration.toFixed(2)}s，源帧率 ${fps}fps → 分档帧率 ${BASE_FPS}fps（预计 ${Math.round(BASE_FPS * duration)} 帧）`)
   } else {
     console.log(`[1/6] 时长 ${duration.toFixed(2)}s，源帧率 ${fps}fps → 指定基础帧率 ${BASE_FPS}fps`)
   }
@@ -1086,14 +1102,22 @@ async function main() {
 
   const fullDisplaySet = buildDisplaySet(baseFrames, cues)
   // 保底采样：把展示帧裁到预算内（页数不再随时长线性膨胀）
-  // 动态预算：没显式指定帧预算时，按「每页覆盖 6 秒」推算，夹在 8-36 页
-  const pagesByDuration = Math.max(8, Math.min(36, Math.ceil(duration / 6)))
+  // 页数不再设上限（指挥官 2026-11-16 决定）。
+  //
+  // 旧逻辑是 Math.max(8, Math.min(36, ceil(duration/6)))：短视频被抬到 8 页、
+  // 长视频被压到 36 页。问题是删掉 OCR 之后，硬字幕只能靠 VLM 在网格图上读，
+  // 而抽帧率已经按时长分档拉高了（短 12fps ~ 长 1fps）——再拿旧公式压页数，
+  // 就会出现「抽了 109 帧、只用 48 帧、剩下 61 帧白抽」。
+  //
+  // 现在页数 = 实际抽到的帧数 / 每页格数，抽多少就用多少。
+  // 实测下来短/中视频最多也就 20 页左右（2 分钟以上才会更多，那个另议）。
+  const pagesByDuration = Math.ceil(baseFrames.length / PAGE_FRAMES)
   const budgetPages = process.env.DSH_FRAME_BUDGET
     ? Math.floor(FRAME_BUDGET / PAGE_FRAMES)
     : pagesByDuration
   if (!process.env.DSH_FRAME_BUDGET) {
-    console.log('[5a] 动态预算：' + duration.toFixed(1) + 's / 6s = ' + pagesByDuration +
-      ' 页（夹在 8-36），共 ' + (pagesByDuration * PAGE_FRAMES) + ' 帧')
+    console.log('[5a] 页数 = 抽帧数 ' + baseFrames.length + ' / ' + PAGE_FRAMES +
+      ' = ' + pagesByDuration + ' 页（不设上限）')
   }
   const coverage = selectCoverageFrames(fullDisplaySet, {
     cutTimes,
