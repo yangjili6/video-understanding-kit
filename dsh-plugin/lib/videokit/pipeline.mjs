@@ -1197,7 +1197,9 @@ async function main() {
       video: VIDEO, outDir: OUT, groups, subtitleBands: bands, FW: 960,
     })
     console.log(`[6b] 字幕条带：${bandStats.withBand}/${bandStats.pages} 页有字幕条（共 ${bandStats.bandItems} 条，已去重）`)
-    if (!bands.length) console.log('     （无稳定字幕带，跳过拼条带）')
+    // 注意：不要再根据 bands.length 打「无稳定字幕带」——OCR 删除后 subtitleBands
+    // 恒为空数组，条带位置改由 band-probe 的图像差分独立探测，跟这个数组没关系。
+    // 之前那行是删除 OCR 时的遗留，会误报。
   } catch (e) {
     console.log(`[6b] 字幕条带生成失败（不影响主流程）：${String(e?.message || e).slice(0, 160)}`)
   }

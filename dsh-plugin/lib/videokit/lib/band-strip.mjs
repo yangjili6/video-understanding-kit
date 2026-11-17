@@ -280,6 +280,11 @@ export function buildBandStrips({ video, outDir, groups, subtitleBands, FW }) {
 
       withBand++
       bandItems += strips.reduce((n, st) => n + st.segs.length, 0)
+      // 把条带图路径回写到 page 对象上：
+      // 下游 dedupPages 要拿它做「字幕相同即重复」的判定，但 groups 是独立结构，
+      // 不这样回写的话 dedup 拿不到条带图。
+      p.bandFile = bandFile
+      p.bandStrips = strips.map((st) => ({ main: !!st.main, count: st.segs.length }))
       manifest.pages.push(metaOf(g, p, { strips, bandFile, enhFile, textDensity: td, strongContrast: sc }))
     }
   }
