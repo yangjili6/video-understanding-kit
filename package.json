@@ -1,7 +1,7 @@
 {
   "name": "video-understanding-kit",
   "version": "0.3.4",
-  "description": "网格法看视频：TransNet 镜头分组 + 网格 + PP-OCR 字幕 + ASR",
+  "description": "视频理解流水线：采样、镜头分组、网格去重、字幕图像条带与可选 ASR",
   "type": "module",
   "scripts": {
     "models": "node download-models.mjs",

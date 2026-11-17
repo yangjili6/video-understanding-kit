@@ -1,113 +1,48 @@
 # dsh-video-kit 视频理解插件
 
-把视频整理成时间线、镜头分组和可回查网格页，供 DSH Agent 浏览与核验。
+将核心流水线接入 DSH，输出视频时间线、网格页和逐页视觉核验结果。核心处理说明以仓库根目录的 [README](../README.md) 和 [ADR-0019](../docs/ADR-0019-remove-ocr.md) 为准。
 
-## 能力
+## 当前工具
 
-插件注册三个工具：
+插件入口注册以下四个工具：
 
-### `video_analyze`
-
-输入本地视频路径或 Bilibili 视频链接（支持 `b23.tv` 短链），返回视频时长、内容组、字幕时间线（硬字幕 OCR + ASR 台词）、输出目录和索引路径。两条识别链的开关**只能从侧栏面板设置**（见下节）——0.3.0 起工具不再接受 `subs` / `asr` 参数，避免 agent 传参把面板开关架空。
-
-返回值里 `subsCount` 只统计 PP-OCR 硬字幕，`asrCount` / `asr` 是语音台词，两者互不代表 —— 硬字幕为 0 不等于视频没声音。
-
-当前**不支持任意 HTTP 直链**。URL 视频下载到 `downloads/`，**保留 24 小时、最多 3 条**（新的顶掉旧的）：同一视频重复分析不必重新下载，也能避开 B 站限流。
-
-### `video_frame`
-
-按时间点截取原始帧，可选裁剪与缩放。输入本地视频路径或 Bilibili 链接；传链接时会重新下载视频后取帧。结果以文件路径返回，可用 DSH 的 `read_image` 打开。
-
-建议流程：
-
-1. 调用 `video_analyze` 浏览时间线与组级导航图。
-2. 对不确定的字幕或动作，调用 `video_frame` 定位原帧，或用 `read_image` 打开对应网格页。
-3. 将 OCR/ASR 视为候选文本；关键文字、数字和动作细节要回看核验。
-
-### `video_look`
-
-看第 N 页网格：**图和这一页的字幕在同一个返回里，图排在文字前面**。这是「看图说话」的强制入口——`video_report` 会核对实际看过的页数，没看够直接拒收。
-
-返回含 `dedup.role`（`kept` / `visualGroup` / `dropped`）、`openedCount`、该页时间段的 `subs` / `screenText` / `asr`。被判定重复的页默认拦下，核对去重质量时传 `includeDropped: true` 才看得到。
-
-0.3.0 起网格图随返回内联。若当前 DSH 版本的附件服务不可用，会返回 `imageAttached: false` 与 `imageSkipReason`，并在文本块最前面提示「用 `read_image` 打开 `gridPath`」——**降级不会静默**，避免只读到字幕就以为看过画面。
-## 侧栏面板
-
-侧栏「视频理解」（YouTube 样式图标）打开一个控制面板，开关就是 `video_analyze` 的默认行为：
-
-| 控件 | 作用 |
+| 工具 | 用途 |
 |---|---|
-| 硬字幕提取（OCR） | 用 PP-OCRv4 扫画面烧录字幕。约 0.5s/帧，纯人物画面通常一无所获 |
-| 语音识别（ASR） | 本地 sherpa-onnx paraformer 识别台词；视频有配音却没烧录字幕时必开 |
-| 基础抽帧率 | 1–12 fps，越高越细也越贵 |
+| video_analyze | 分析本地视频或 Bilibili 链接，生成时间线、网格和索引 |
+| video_look | 返回指定网格页及该页的定位信息；需要据图描述时先打开图像 |
+| video_report | 检查本次采样页面的阅读情况；通过不等于原视频无遗漏 |
+| video_frame | 按时间点提取原始帧，可指定裁剪和缩放 |
 
-配置存在 `storages/dsh-video-kit/config.json`（全机共用）。OCR / ASR 开关只从面板读，工具参数不再能覆盖；面板改了配置，下一次调用即生效，不需要重启。
+当前入口没有注册 video_read_page 或 video_library；阅读库流程尚未接入 DSH 工具。
 
-面板数据走 `/dsh-video-kit-api`：`GET /config`、`POST /config`、`GET /recent`（最近几次运行的时长/组数/字幕数/台词数）。这个路由是本机免认证的插件路由，跟 WebUI 的认证体系无关。
+## 文字与语音
+
+当前核心流水线已删除硬字幕 OCR。字幕带会以图像条带形式贴到增强页，供读图模型查看，流水线本身不会从硬字幕产生文本。
+
+- 传入 --subs 时，只提取视频内嵌的兼容软字幕轨。
+- 开启 ASR 时，设备本地运行 sherpa-onnx Paraformer。
+- 插件配置中仍保留名为 OCR 的旧开关；当前核心把该开关映射到 --subs，因此它控制的是软字幕轨提取，不会启动 OCR。
+- ASR 与基础帧率由插件配置决定；不确定的文字、数字和动作应回看原始帧或音频。
 
 ## 安装
 
-要求 DSH Mobile、Node.js 20 或更新版本、ffmpeg、ImageMagick。
+要求 DSH、Node.js 20+、FFmpeg 和 ImageMagick。插件使用 TransNetV2 ONNX 模型；ASR 另需 sherpa-onnx 运行时和 Paraformer 模型。
 
-1. 将 `dsh-plugin/` 放进 DSH profile 的 `node_modules` 下（或使用 `link:` 安装）。
-2. 安装插件依赖。包声明了 `onnxruntime-web`；若 DSH 的链接安装没有自动安装依赖，请在插件目录运行：
+1. 将 dsh-plugin 目录安装到 DSH 可加载的插件目录，或使用本地 link 安装。
+2. 在插件目录安装依赖，并运行模型下载脚本：
 
-   ```bash
-   pnpm install
-   ```
+       pnpm install
+       pnpm models
 
-3. 下载视觉模型。在插件目录运行：
+3. 在 DSH 中通过 install_bundle 加载插件，然后按 DSH 要求重启插件引擎。
 
-   ```bash
-   pnpm models
-   # 或 node lib/videokit/download-models.mjs
-   ```
+FFmpeg 或 ImageMagick 不在引擎 PATH 中时，可在 DSH 扩展目录安装；FFmpeg 也可用 FFMPEG_BIN 指定。
 
-   模型约 **47 MB**，保存到 `lib/videokit/lib/models/`。模型文件不随 Git 仓库分发，也不应提交进仓库。
+## 输入和数据
 
-4. 在 DSH 中执行 `install_bundle target="link:<插件绝对路径>"`，然后重启引擎。插件不支持热重载。
+- 支持本地视频路径及 Bilibili 视频链接（含 b23.tv 短链）；不支持任意 HTTP 视频直链。
+- 本地分析在设备上执行。Bilibili 链接解析与下载需要网络。
+- 默认数据目录位于 $DSH_HOME/storages/dsh-video-kit/，可用 DSH_VIDEO_KIT_DIR 覆盖。
+- 下载视频会限时保留并定期清理；网格、索引和截帧保存在本机存储中。
 
-ffmpeg / ImageMagick 若不在引擎的 `PATH` 中，插件会探测 DSH 扩展目录；也可通过 `FFMPEG_BIN` 指定 ffmpeg 可执行文件。
-
-### 可选：ASR
-
-`asr: true` 需要额外安装 sherpa-onnx 和中文 Paraformer 模型（约 217 MB）。模型路径与运行时配置见 `lib/videokit/asr.mjs`。这部分不包含在上述视觉模型包中。
-
-## 数据目录
-
-默认目录为 `$DSH_HOME/storages/dsh-video-kit/`，可用 `DSH_VIDEO_KIT_DIR` 覆盖：
-
-```text
-dsh-video-kit/
-├── out/        # index.json、base/extra 采样帧、grids、可选 subs/audio
-├── frames/     # video_frame 截取的原始帧
-└── downloads/  # 下载的视频，保留 24h / 最多 3 条（新的顶掉旧的）
-```
-
-`video_analyze` 的 `out` 参数只接受单级目录名称，产物始终写入插件存储目录下的唯一子目录。`video_frame` 的 `outDir` 也只接受存储区内的子目录名称。
-
-## 数据与网络
-
-- 本地视频由设备上的 ffmpeg、ImageMagick 与 ONNX 模型处理，不会上传到远程推理服务。
-- 输入 Bilibili 链接时，插件会访问 Bilibili 短链/API，并下载对应视频流；该路径需要网络。
-- 首次准备模型时，从 Hugging Face 与 PaddleOCR 的 GitHub 原始文件地址下载约 47 MB 的模型和字典。
-- 下载的视频保留 24 小时、最多 3 条，超出自动清理；生成的网格、索引和截帧保存在 DSH 本机存储中（`out/` 保留 7 天）。
-
-## 实测记录
-
-2026-10-25 的一段 95 秒竖屏 Bilibili 视频测试：耗时 262 秒（含下载、TransNet 检测和 PP-OCR），得到 13 个内容组、28 条字幕和 87 张网格页。OCR 曾将「逗AI真好玩」识别成「逗A真好玩」。这是单次测试记录，不代表其他设备或视频的性能与准确率。
-
-2026-10-30 修复一处 OCR 全灭的坐标 bug：`subs.mjs` 的几何阈值原按 `ffprobe` 原始分辨率（1280×720）计算，而送检帧是 `scale=960:-1` 缩到 960×540 的，字幕框落在这套坐标里 —— `w > W*0.3`(384) 与 `y0 > H*0.65`(468) 对实际 `w=192 / y0=450` 的字幕恒为假，整片 420 帧输出 0 条。改为按帧坐标判定（宽 >8%、字高 2%~16%、下方 40%、水平居中），并加居中度挡掉角标水印。同一视频前 1/3（70s）实测：修复前 0 条，修复后 20 条，置信度 0.94~1.00。
-
-同日加「预探测」：全量 OCR 前先均匀抽 12 帧试一遍，一帧字幕行都没有就直接收工（12 帧约 6s，换来省掉整轮全量）。实测 15 秒无字幕片：命中 0，9.7s 返回 0 条；有字幕片照常放行（20 条，73.9s）。可用环境变量 `SUBS_PROBE_N=0` 关闭。
-
-同日调 ASR 切分（`asr.mjs`）：
-
-- **超长段等分**（`ASR_MAX_SEG`，默认 25s）。paraformer 是整段一次性解码，喂 80 秒以上会明显跑偏。实测 210s 动画片：原来切出 86s/124s 两段、文本出现「冻筷子」「滑管」，切成 25s 以内后变成 **13 条 / 87.4s**（原来 8 条 / 120s），「我替你们每个人保管过一些东西」这类句子也捞回来了。
-- **语气词过滤**：底噪/音乐常被硬识别成「啊」「啊啊」「嗯」，现在直接丢弃（实测实拍片少 1 条噪音）。
-- **静音阈值可调**（`ASR_SILENCE_DB`，默认 30；`ASR_MIN_SILENCE`，默认 0.4）。实拍片人声轻时可放宽到 35：30s 实拍样本 3 条 → 5 条；但同一放宽用在动画片上反而少 4 条（段被合并过长），所以默认保持 30。
-- 修掉一个 `Number(null) === 0` 的坑：最后一段 `end: null` 表示「到结尾」，原判定会把它算成 0 秒而跳过切分。
-
-## 架构与许可证
-
-完整的视频处理代码位于 `lib/videokit/`，根目录工具包与 DSH 插件内置副本需要保持同步。插件包采用 MIT 许可；模型权重有各自的许可条款，请在使用前核对。
+具体运行参数、输出字段和边界见 [核心 README](../README.md)。
